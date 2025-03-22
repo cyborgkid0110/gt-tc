@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 
-def mapplot(nodes, area, actives, linking):
+def mapplot(nodes, area, actives, linking, local_net):
     x_coords = [node[0] for node in nodes]
     y_coords = [node[1] for node in nodes]
 
@@ -19,6 +19,21 @@ def mapplot(nodes, area, actives, linking):
                 [x12, x22], 
                 color='black',
                 linewidth=1)
+        
+    # draw local network
+    if local_net is not None:
+        x_local = [node[0] for node in local_net['nodes']]
+        y_local = [node[1] for node in local_net['nodes']]
+        for link in local_net['links']:    
+            node1, node2 = link
+            x11, x12 = node1
+            x21, x22 = node2
+            plt.plot([x11, x21], 
+                    [x12, x22], 
+                    color='orange',
+                    linewidth=0.5)
+
+        plt.scatter(x_local, y_local, c='green', marker='o', s=20)
 
     # Set axis limits
     plt.xlim(-area * 1.2, area * 1.2)
