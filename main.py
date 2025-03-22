@@ -14,12 +14,12 @@ num_nodes = 200
 area = 250
 xs, ys = (0, 0) # sink node
 
-e0 = 50      # initial energy of the nodes
-eth = 20     # threshold energy
-pth = 5*pow(10, -9)     # power threshold
-hop_max = 3     # number of hops
-d = 50      # cell size
-Vsta = 3.6  # standard working voltage
+e0 = 50                     # initial energy of the nodes
+eth = 20                    # threshold energy
+pth = 5*pow(10, -9)         # power threshold
+hop_max = 2                 # number of neighbor hops
+d = 50                      # cell size
+Vsta = 3.6                  # standard working voltage
 gamma = 5
 p_strat = []
 p_min = 0.01
@@ -267,7 +267,7 @@ while t < max_t:
             new_power = cell_group[cell]['power'] - p_step
             e_res_active = find_e_res(cell, cell_group[cell]['active'])
             if cell_group[cell]['util'] is None:
-                cell_group[cell]['util'] = ctb_benefit(cell) + e_balance_benefit(cell) - e_cost(cell_group[cell]['power'], e_res_active)
+                cell_group[cell]['util'] = ctb_benefit(cell) - e_balance_benefit(cell) - e_cost(cell_group[cell]['power'], e_res_active)
             active_x, active_y = cell_group[cell]['active']
             new_util = None
             
@@ -295,7 +295,7 @@ while t < max_t:
                 # print('Contribute benefit: ', ctb_benefit(cell))
                 # print('Energy balance benefit: ', e_balance_benefit(cell))
                 # print('Cost: ', e_cost(cell_group[cell]['power'], e_res_active))
-                new_util = ctb_benefit(cell) + e_balance_benefit(cell) - e_cost(new_power, e_res_active)
+                new_util = ctb_benefit(cell) - e_balance_benefit(cell) - e_cost(new_power, e_res_active)
                     
             if new_util > cell_group[cell]['util']:
                 cell_group[cell]['util'] = new_util
