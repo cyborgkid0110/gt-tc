@@ -16,14 +16,14 @@ xs, ys = (0, 0) # sink node
 
 e0 = 50                     # initial energy of the nodes
 eth = 20                    # threshold energy
-pth = 5*pow(10, -9)         # power threshold
+pth = 2*pow(10, -9)         # power threshold
 hop_max = 2                 # number of neighbor hops
 d = 50                      # cell size
 Vsta = 3.6                  # standard working voltage
 gamma = 5
 p_strat = []
 p_min = 0.01
-p_max = 0.08
+p_max = 0.1
 p_step = 0.0001
 wave = 0.1224
 # time
