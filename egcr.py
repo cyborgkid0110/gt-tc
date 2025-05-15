@@ -3,6 +3,7 @@ import math
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+from scipy.stats import qmc
 
 nodes = []
 num_nodes = 200
@@ -11,14 +12,14 @@ xs, ys = (0, 0)
 
 e0 = 50                     # initial energy of the nodes
 eth = 20                    # threshold energy
-pth = 5*pow(10, -9)         # power threshold
+pth = 1.25*pow(10, -9)         # power threshold
 hop_max = 2                 # number of neighbor hops
 d = 50                      # cell size
 Vsta = 3.6                  # standard working voltage
 gamma = 5
 p_strat = []
 p_min = 0.01
-p_max = 0.1
+p_max = 0.08
 p_step = 0.0001
 wave = 0.1224
 
@@ -50,6 +51,7 @@ cm_costs = []
 
 def cal_rc(power):
     distance = math.sqrt((power*wave*wave)/(pth*16*math.pi*math.pi))
+    print(distance)
     return distance
 
 def cal_tx_cost(d, role):
@@ -67,9 +69,9 @@ def cal_cost(node_info, xn, yn, role):
     c_tx = cal_tx_cost(d, role)
     c_total = 0
     if role == 'CM':
-        i_sense = random.uniform(pow(10, -7), 5*pow(10, -6))
+        i_sense = random.uniform(pow(10, -8), 5*pow(10, -7))
         c_sense = node_info['Vpre'] * i_sense * m_bit
-        i_process = random.uniform(pow(10, -7), pow(10, -6))
+        i_process = random.uniform(pow(10, -8), 5*pow(10, -7))
         c_process = node_info['Vpre'] * m_bit * i_sense / 4
         c_total = c_sense + c_process + c_tx
         # Store costs for plotting
@@ -83,21 +85,52 @@ def cal_cost(node_info, xn, yn, role):
     return c_total
 
 # Generate nodes
-for i in range(num_nodes):
-    x = random.uniform(-area, area)  # Random x coordinate between -100 and 100
-    y = random.uniform(-area, area)  # Random y coordinate between -100 and 100
-    xn, yn = round(x, 2), round(y, 2)
-    network['vertices'].append((xn, yn))
+# for i in range(num_nodes):
+#     x = random.uniform(-area, area)  # Random x coordinate between -100 and 100
+#     y = random.uniform(-area, area)  # Random y coordinate between -100 and 100
+#     xn, yn = round(x, 2), round(y, 2)
+#     network['vertices'].append((xn, yn))
 
+#     node_dict[(xn, yn)] = {
+#         'neighbors': [],
+#         'power': p_max / 4,
+#         'rc': cal_rc(p_max / 4),
+#         'e_res': e0,
+#         'Vpre': random.uniform(2.7, 4.2),
+#         'p0': None,
+#         'CH': False,
+#         'c_ch': 0,
+#         'c_cm': 0,
+#     }
+
+# Generate node with Poisson Disk Sampling
+rng = np.random.default_rng()
+radius = 30
+engine = qmc.PoissonDisk(d=2, radius=radius, rng=rng, ncandidates=num_nodes, l_bounds=0, u_bounds=area * 2)
+sample = engine.random(num_nodes)
+not_generated_nodes = num_nodes - len(sample)
+while (not_generated_nodes > 0):
+    row = np.round(np.random.rand(1, 2) * area * 2, 2)
+    sample = np.append(sample, row, axis=0)
+    not_generated_nodes -= 1
+
+for i in range(0, len(sample)):
+    xn, yn = sample[i, 0] - area, sample[i, 1] - area
+    network['vertices'].append((xn, yn))
+    
     node_dict[(xn, yn)] = {
         'neighbors': [],
-        'power': p_max,
-        'rc': cal_rc(p_max),
+        'power': p_max / 4,
+        'rc': cal_rc(p_max / 4),
         'e_res': e0,
         'Vpre': random.uniform(2.7, 4.2),
         'p0': None,
         'CH': False,
+        'c_ch': 0,
+        'c_cm': 0,
     }
+
+print("Generated done")
 
 # Each node broadcast ADV message
 # After receiving ADV, each node detect the number of neighboring nodes
@@ -120,10 +153,15 @@ for node in network['vertices']:
 
     c_ch = cal_cost(node_dict[node], node[0], node[1], "CH")
     c_cm = cal_cost(node_dict[node], node[0], node[1], "CM") 
+    node_dict[node]['c_ch'] = c_ch
+    node_dict[node]['c_cm'] = c_cm
     # Store CH and CM costs for plotting
     ch_costs.append(c_ch)
     cm_costs.append(c_cm)
-    p0 = 1 - pow(abs(c_ch-c_cm)/(payoff-c_cm), 1/(len(node_dict[node]['neighbors'])))
+    if c_ch-c_cm < 0:
+        p0 = 0
+    else:
+        p0 = 1 - pow((c_ch-c_cm)/(payoff-c_cm), 1/(len(node_dict[node]['neighbors'])))
     node_dict[node]['p0'] = p0
     if random.random() < p0:
         p_ch = p0 * node_dict[node]['e_res'] / e0
@@ -134,7 +172,12 @@ for node in network['vertices']:
         else:
             node_dict[node]['CH'] = False
         CH_can += 1
-    
+
+# for node in network['vertices']:
+#     if node_dict[node]['CH']
+
+print('---------------------------------------')
+print('Round:', t)
 print('Total Candidate CH:', CH_can)
 print('Total Real CH:', CH_true)
 
