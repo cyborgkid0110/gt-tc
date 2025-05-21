@@ -126,6 +126,11 @@ for node1 in network['vertices']:
         if node_dict[node1]['rc'] >= d:
             node_dict[node1]['neighbors'].append(node2)
 
+# ========== Start of Added Code for Data Collection ==========
+# List to store dead_nodes across rounds
+dead_nodes_values = []
+# ========== End of Added Code for Data Collection ==========
+
 while (t < max_t):
     CH_con = 0
     CH_can = 0
@@ -177,8 +182,8 @@ while (t < max_t):
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
             continue
-        if node_dict[node]['CH'] == True:
 
+        if node_dict[node]['CH'] == True:
             node_dict[node]['e_res'] -= node_dict[node]['c_ch']
             for neighbor in node_dict[node]['neighbors']:
                 if node_dict[neighbor]['CH_neighbor'] is None:
@@ -205,6 +210,11 @@ while (t < max_t):
     t += 1
     print(f'Round: {t}, Participated Nodes: {CH_con}, Total Candidate CH: {CH_can}, Total Real CH: {CH_true}')
 
+    # ========== Start of Added Code for Data Collection Inside Loop ==========
+    # Store dead_nodes for this round
+    dead_nodes_values.append(dead_nodes)
+    # ========== End of Added Code for Data Collection Inside Loop ==========
+
     # # Plotting node coverage
     # fig1, ax1 = plt.subplots(figsize=(6, 6))
     # ax1.set_xlim(-area, area)
@@ -214,46 +224,64 @@ while (t < max_t):
     # ax1.set_xlabel("X Position")
     # ax1.set_ylabel("Y Position")
     # ax1.grid(True)
-
+    #
     # # Plot nodes and their coverage
     # for (x, y) in network['vertices']:
     #     circle = patches.Circle((x, y), node_dict[(x, y)]['rc'], edgecolor='blue', facecolor='lightblue', alpha=0.3)
     #     ax1.add_patch(circle)
-        
+    #     
     #     if node_dict[(x, y)]['CH'] == True:
     #         ax1.plot(x, y, 'ro')  # Red dot for CH
     #     else:
     #         ax1.plot(x, y, 'bo')  # Blue dot for non-CH
-
+    #
     # node_patch = patches.Patch(color='lightblue', label='Coverage')
     # ax1.legend(handles=[node_patch])
-
+    #
     # # Plotting sensing, processing, and transmitting costs as scatter plot
     # fig2, ax2 = plt.subplots(figsize=(10, 6))
     # node_indices = np.arange(len(sensing_costs))  # One point per node
-
+    #
     # ax2.scatter(node_indices, sensing_costs, color='green', marker='o', label='Sensing Cost', alpha=0.6)
     # ax2.scatter(node_indices, processing_costs, color='blue', marker='^', label='Processing Cost', alpha=0.6)
     # ax2.scatter(node_indices, transmitting_costs, color='red', marker='s', label='Transmitting Cost', alpha=0.6)
-
+    #
     # ax2.set_xlabel('Node Index')
     # ax2.set_ylabel('Cost (x 10^4)')
     # ax2.set_title('Sensing, Processing, and Transmitting Costs per Node')
     # ax2.legend()
     # ax2.grid(True)
-
+    #
     # # Plotting CH and CM total costs as scatter plot
     # fig3, ax3 = plt.subplots(figsize=(10, 6))
     # node_indices_ch_cm = np.arange(len(ch_costs))  # One point per node
-
+    #
     # ax3.scatter(node_indices_ch_cm, ch_costs, color='purple', marker='D', label='CH Total Cost', alpha=0.6)
     # ax3.scatter(node_indices_ch_cm, cm_costs, color='orange', marker='*', label='CM Total Cost', alpha=0.6)
-
+    #
     # ax3.set_xlabel('Node Index')
     # ax3.set_ylabel('Total Cost')
     # ax3.set_title('Total Cost of Becoming CH vs CM per Node')
     # ax3.legend()
     # ax3.grid(True)
-
+    #
     # # Display all plots
     # plt.show()
+
+# ========== Start of Added Code for Plotting Dead Nodes Line Chart ==========
+# Plotting dead_nodes as a line chart
+fig4, ax4 = plt.subplots(figsize=(10, 6))
+round_indices = np.arange(len(dead_nodes_values))
+
+ax4.plot(round_indices, dead_nodes_values, color='red', marker='.', linestyle='-', label='Dead Nodes')
+ax4.set_xlabel('Round')
+ax4.set_ylabel('Number of Dead Nodes')
+ax4.set_title('Number of Dead Nodes vs Round')
+ax4.legend()
+ax4.grid(True)
+
+# Save the plot to a file
+plt.savefig('dead_nodes_plot.png')
+# Display the plot
+plt.show()
+# ========== End of Added Code for Plotting Dead Nodes Line Chart ==========
