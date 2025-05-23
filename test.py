@@ -14,7 +14,7 @@ xs, ys = (0, 0)
 
 e0 = 1                     # initial energy of the nodes
 eth = 20                    # threshold energy
-pth = 0.3*pow(10, -9)         # power threshold
+pth = 0.5*pow(10, -9)         # power threshold
 hop_max = 2                 # number of neighbor hops
 d = 50                      # cell size
 Vsta = 3.6                  # standard working voltage
@@ -142,7 +142,8 @@ for node1 in network['vertices']:
             continue
         d = math.hypot(node1[0] - node2[0], node1[1] - node2[1])
         if node_dict[node1]['rc'] >= d:
-            node_dict[node1]['neighbors'].append(node2)
+            add_neighbor(node1, node2)
+            # node_dict[node1]['neighbors'].append(node2)
 
 while (t < max_t):
     CH_con = 0
@@ -194,31 +195,6 @@ while (t < max_t):
                 node_dict[node]['CH'] = False
             CH_can += 1
 
-    # Check real CHs
-    fig1, ax1 = plt.subplots(figsize=(6, 6))
-    ax1.set_xlim(-area, area)
-    ax1.set_ylim(-area, area)
-    ax1.set_aspect('equal', adjustable='box')
-    ax1.set_title("Sensor Node Coverage")
-    ax1.set_xlabel("X Position")
-    ax1.set_ylabel("Y Position")
-    ax1.grid(True)
-
-    # Plot nodes and their coverage
-    for (x, y) in network['vertices']:
-        if node_dict[(x, y)]['CH'] == True: 
-            circle = patches.Circle((x, y), node_dict[(x, y)]['rc'], edgecolor='blue', facecolor='lightblue', alpha=0.3)
-            ax1.add_patch(circle)
-        
-        if node_dict[(x, y)]['CH'] == True:
-            ax1.plot(x, y, 'ro')  # Red dot for CH
-        else:
-            ax1.plot(x, y, 'bo')  # Blue dot for non-CH
-
-    node_patch = patches.Patch(color='lightblue', label='Coverage')
-    ax1.legend(handles=[node_patch])
-    plt.show()
-
     # After real CHs are selected, CHs broadcast the advertising message
     # CHs who receive advertising messages will add the node to CH neighboring list.
     # CMs receive all messages from CHs and select the nearest CH to send message.
@@ -226,9 +202,9 @@ while (t < max_t):
         if node_dict[node1]['e_res'] <= 0:
             continue
         if node_dict[node1]['CH'] == True: # CH set to max tx power
-            print(node1)
             node_dict[node1]['power'] = p_max
             node_dict[node1]['rc'] = cal_rc(p_max)
+            node_dict[node]['c_ch'] = cal_cost(node_dict[node], node[0], node[1], "CH")
             for node2 in network['vertices']:
                 if node1 == node2:
                     continue
@@ -259,35 +235,48 @@ while (t < max_t):
         if node_dict[node]['e_res'] <= 0:
             continue
         
-        if node_dict[node]['CH'] == False:
-            if node_dict[node]['CH_belong'] is not None:
-                for neighbor in node_dict[node]['neighbors']:
-                    if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
-                        node_dict[node]['neighbors'].remove(neighbor)
-            else:
-                node_dict[node]['neighbors'] = []
+        if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
+            for neighbor in node_dict[node]['neighbors'][:]:
+                if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
+                    node_dict[node]['neighbors'].remove(neighbor)
         else:
             node_dict[node]['neighbors'] = []
+
+    for node in network['vertices']:
+        if node_dict[node]['e_res'] <= 0:
+            continue
+
+        if node_dict[node]['CH'] == False and len(node_dict[node]['neighbors']) != 0:
+            for neighbor in node_dict[node]['neighbors']:
+                if node_dict[neighbor]['CH'] == False:
+                    if node_dict[node]['CH_belong'] != node_dict[neighbor]['CH_belong']:
+                        print('Detected', node, neighbor)
     
     # Unconnected nodes will try to join a cluster by sending join request to surrounding node
-    # Only joined CM send ACK
     extended_cluster = 0
     while (extended_cluster == 0):
         extended_cluster = 1
         for node in network['vertices']:
-            if node_dict[node]['CH_belong'] is None:
+            if node_dict[node]['CH_belong'] is None and node_dict[node]['CH'] == False:
                 extended_cluster = 0
 
                 for node2 in network['vertices']:
                     if node == node2:
                         continue
                     d = math.hypot(node[0] - node2[0], node[1] - node2[1])
-                    # Only CH can received the message. Node received first ACK will set CH belong
-                    if (node_dict[node]['rc'] >= d) and (node_dict[node2]['CH_belong'] is not None):
-                        if node_dict[node]['power'] > node_dict[node2]['power']:
-                            node_dict[node2]['power'] = node_dict[node]['power']
-                            node_dict[node2]['rc'] = cal_rc(node_dict[node2]['power'])
-                        node_dict[node]['CH_belong'] = node_dict[node2]['CH_belong']
+                    # Only CM can received the message. Node received first ACK will set CH belong
+                    if node_dict[node]['rc'] >= d:
+                        if node_dict[node2]['CH_belong'] is not None:
+                            if node_dict[node]['power'] > node_dict[node2]['power']:
+                                node_dict[node2]['power'] = node_dict[node]['power']
+                                node_dict[node2]['rc'] = cal_rc(node_dict[node2]['power'])
+                        
+                            if node_dict[node]['CH_belong'] is None:
+                                node_dict[node]['CH_belong'] = node_dict[node2]['CH_belong']
+
+                            if node_dict[node]['CH_belong'] == node_dict[node2]['CH_belong']:
+                                add_neighbor(node, node2)
+                                add_neighbor(node2, node)
 
                 # If no ACK is received, node increases the power transmission
                 if node_dict[node]['CH_belong'] is None:
@@ -300,6 +289,7 @@ while (t < max_t):
             continue
 
         if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
+            # print("CH:", node_dict[node]['CH_belong'], "node", node)
             add_neighbor(node_dict[node]['CH_belong'], node)
 
     for node in network['vertices']:
@@ -307,53 +297,14 @@ while (t < max_t):
             continue
 
         if node_dict[node]['CH'] == True:
-            # for neighbor in node_dict[node]['CH_neighbors']:
-            #     if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
-            #         network['edges'].append((node, neighbor))
-        # else:
-            for neighbor in node_dict[node]['neighbors']:
+            for neighbor in node_dict[node]['CH_neighbors']:
                 if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
                     network['edges'].append((node, neighbor))
+        # else:
+        for neighbor in node_dict[node]['neighbors']:
+            if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
+                network['edges'].append((node, neighbor))
 
-    # ========== Start of Added Code for CSV Export ==========
-    # Export node_dict to CSV
-    csv_filename = 'nodes_data.csv'
-    headers = ['x', 'y', 'neighbors', 'power', 'rc', 'e_res', 'Vpre', 'p0', 'CH', 'CH_belong', 'CH_neighbors', 'c_ch', 'c_cm']
-
-    with open(csv_filename, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        # Write header
-        writer.writerow(headers)
-        
-        # Write data for each node
-        for node, info in node_dict.items():
-            x, y = node
-            # Convert neighbors and CH_neighbors to string
-            neighbors_str = str(info['neighbors'])
-            ch_neighbors_str = str(info['CH_neighbors'])
-            # Convert CH_belong to string (handle None case)
-            ch_belong_str = str(info['CH_belong']) if info['CH_belong'] is not None else ''
-            # Write row
-            row = [
-                x,
-                y,
-                neighbors_str,
-                info['power'],
-                info['rc'],
-                info['e_res'],
-                info['Vpre'],
-                info['p0'] if info['p0'] is not None else '',
-                info['CH'],
-                ch_belong_str,
-                ch_neighbors_str,
-                info['c_ch'],
-                info['c_cm']
-            ]
-            writer.writerow(row)
-
-    print(f"Node data exported to {csv_filename}")
-    # ========== End of Added Code for CSV Export ==========
-    
     # Enengy consumption
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:

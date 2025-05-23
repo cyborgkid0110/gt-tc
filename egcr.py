@@ -14,7 +14,7 @@ xs, ys = (0, 0)
 
 e0 = 1                     # initial energy of the nodes
 eth = 20                    # threshold energy
-pth = 0.3*pow(10, -9)         # power threshold
+pth = 0.5*pow(10, -9)         # power threshold
 hop_max = 2                 # number of neighbor hops
 d = 50                      # cell size
 Vsta = 3.6                  # standard working voltage
@@ -142,7 +142,8 @@ for node1 in network['vertices']:
             continue
         d = math.hypot(node1[0] - node2[0], node1[1] - node2[1])
         if node_dict[node1]['rc'] >= d:
-            node_dict[node1]['neighbors'].append(node2)
+            add_neighbor(node1, node2)
+            # node_dict[node1]['neighbors'].append(node2)
 
 while (t < max_t):
     CH_con = 0
@@ -214,7 +215,7 @@ while (t < max_t):
                 if node_dict[node1]['rc'] >= d: # node2 receives advertising message
                     # If received node is CH
                     if node_dict[node2]['CH'] == True:
-                        if node2 in node_dict[node1]['CH_neighbors']:
+                        if node2 not in node_dict[node1]['CH_neighbors']:
                             node_dict[node1]['CH_neighbors'].append(node2)
                     # If received node is CM, update the CH belong if new CH is closer to node.
                     else:
@@ -235,18 +236,28 @@ while (t < max_t):
             continue
         
         if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
-            for neighbor in node_dict[node]['neighbors']:
+            for neighbor in node_dict[node]['neighbors'][:]:
                 if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
                     node_dict[node]['neighbors'].remove(neighbor)
         else:
             node_dict[node]['neighbors'] = []
+
+    for node in network['vertices']:
+        if node_dict[node]['e_res'] <= 0:
+            continue
+
+        if node_dict[node]['CH'] == False and len(node_dict[node]['neighbors']) != 0:
+            for neighbor in node_dict[node]['neighbors']:
+                if node_dict[neighbor]['CH'] == False:
+                    if node_dict[node]['CH_belong'] != node_dict[neighbor]['CH_belong']:
+                        print('Detected', node, neighbor)
     
     # Unconnected nodes will try to join a cluster by sending join request to surrounding node
     extended_cluster = 0
     while (extended_cluster == 0):
         extended_cluster = 1
         for node in network['vertices']:
-            if node_dict[node]['CH_belong'] is None:
+            if node_dict[node]['CH_belong'] is None and node_dict[node]['CH'] == False:
                 extended_cluster = 0
 
                 for node2 in network['vertices']:
@@ -254,11 +265,18 @@ while (t < max_t):
                         continue
                     d = math.hypot(node[0] - node2[0], node[1] - node2[1])
                     # Only CM can received the message. Node received first ACK will set CH belong
-                    if (node_dict[node]['rc'] >= d) and (node_dict[node2]['CH_belong'] is not None):
-                        if node_dict[node]['power'] > node_dict[node2]['power']:
-                            node_dict[node2]['power'] = node_dict[node]['power']
-                            node_dict[node2]['rc'] = cal_rc(node_dict[node2]['power'])
-                        node_dict[node]['CH_belong'] = node_dict[node2]['CH_belong']
+                    if node_dict[node]['rc'] >= d:
+                        if node_dict[node2]['CH_belong'] is not None:
+                            if node_dict[node]['power'] > node_dict[node2]['power']:
+                                node_dict[node2]['power'] = node_dict[node]['power']
+                                node_dict[node2]['rc'] = cal_rc(node_dict[node2]['power'])
+                        
+                            if node_dict[node]['CH_belong'] is None:
+                                node_dict[node]['CH_belong'] = node_dict[node2]['CH_belong']
+
+                            if node_dict[node]['CH_belong'] == node_dict[node2]['CH_belong']:
+                                add_neighbor(node, node2)
+                                add_neighbor(node2, node)
 
                 # If no ACK is received, node increases the power transmission
                 if node_dict[node]['CH_belong'] is None:
@@ -271,7 +289,7 @@ while (t < max_t):
             continue
 
         if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
-            print("CH:", node_dict[node]['CH_belong'], "node", node)
+            # print("CH:", node_dict[node]['CH_belong'], "node", node)
             add_neighbor(node_dict[node]['CH_belong'], node)
 
     for node in network['vertices']:
@@ -279,13 +297,13 @@ while (t < max_t):
             continue
 
         if node_dict[node]['CH'] == True:
-            # for neighbor in node_dict[node]['CH_neighbors']:
-            #     if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
-            #         network['edges'].append((node, neighbor))
-        # else:
-            for neighbor in node_dict[node]['neighbors']:
+            for neighbor in node_dict[node]['CH_neighbors']:
                 if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
                     network['edges'].append((node, neighbor))
+        # else:
+        for neighbor in node_dict[node]['neighbors']:
+            if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
+                network['edges'].append((node, neighbor))
 
     # Enengy consumption
     for node in network['vertices']:
