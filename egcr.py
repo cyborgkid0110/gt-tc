@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 from scipy.stats import qmc
+from scipy import integrate
 import csv
 
 num_nodes = 200
@@ -22,7 +23,7 @@ gamma = 5
 p_strat = []
 p_min = 0.01
 p_max = 0.08
-p_step = 0.001
+p_step = 0.0001
 wave = 0.1224
 
 e_mp = 0.0013*pow(10, -12)
@@ -39,9 +40,9 @@ def cal_rc(power):
     # print(distance)
     return distance
     
-def cal_power(rc):
-    power = pth*16*math.pi*math.pi*rc*rc/(wave*wave)
-    return power
+def cal_rx_power(p_tx, d):
+    p_rx = (p_tx*wave*wave)/(16*math.pi*math.pi*d*d)
+    return p_rx
 
 def cal_tx_cost(d, role):
     m_bit = m_pkt_s if role == 'CM' else m_pkt_l
@@ -64,7 +65,10 @@ def delete_neighbor(node, neighbor):
     if neighbor in node_dict[node]['neighbors']:
         node_dict[node]['neighbors'].remove(neighbor)
 
-test_node = None
+# def reset_node():
+#     for node in network['vertices']:
+#         node_dict[node][]
+
 def cal_cost(node_info, xn, yn, role):
     m_bit = 8
     d = math.sqrt(xn*xn + yn*yn)
@@ -85,6 +89,61 @@ def cal_cost(node_info, xn, yn, role):
         c_agg = len(node_info['neighbors']) * m_pkt_s * e_agg
         c_total = c_rx + c_agg + c_tx
     return c_total
+
+def e_cost_func(x):
+    return np.exp(x/10)
+
+def e_cost(tx_power, e_res):
+    M = 0.1
+    T = 1.0
+    cost = integrate.quad(e_cost_func, e0 - e_res, e0 - e_res + tx_power * T)
+    return cost[0] / M
+
+def ctb_benefit(network):
+    BETA = 1.5
+    return BETA * len(network['vertices'])
+
+def e_balance_benefit(network):
+    ALPHA = 1.5
+    e_res_all = []
+    sum_e_res = 0
+    avg_e_res = 0
+    sum_diff = 0
+
+    if len(network['vertices']) == 0:
+        return 0
+    
+    for vertex in network['vertices']:
+        sum_e_res += node_dict[vertex]['e_res']
+        e_res_all.append(node_dict[vertex]['e_res'])
+    avg_e_res = sum_e_res / len(network['vertices'])
+
+    for e_res in e_res_all:
+        sum_diff += (e_res - avg_e_res)*(e_res - avg_e_res)
+
+    benefit = ALPHA * sum_diff / len(network['vertices'])
+    return benefit
+
+def get_graph(node, hop):
+    vertices = set([node])
+    edges = set()
+
+    if len(node_dict[node]['neighbors']) == 0:
+        return list(vertices), list(edges)
+
+    if hop != 1:
+        for neighbor in node_dict[node]['neighbors']:
+            vertices.add(neighbor)
+            edges.add((node, neighbor))
+            sub_vertices, sub_edges = get_graph(neighbor, hop - 1)
+            vertices.update(sub_vertices)
+            edges.update(sub_edges)
+    else:
+        for neighbor_1_hop in node_dict[node]['neighbors']:
+            vertices.add(neighbor_1_hop)
+            edges.add((node, neighbor_1_hop))
+
+    return list(vertices), list(edges)
 
 t = 0
 max_t = 10000
@@ -130,6 +189,9 @@ for i in range(0, len(sample)):
         'CH_neighbors': [],
         'c_ch': 0,
         'c_cm': 0,
+
+        'util': None,
+        'local_net': None
     }
 
 print("Generated done")
@@ -145,6 +207,7 @@ for node1 in network['vertices']:
             add_neighbor(node1, node2)
             # node_dict[node1]['neighbors'].append(node2)
 
+test_node = None
 while (t < max_t):
     CH_con = 0
     CH_can = 0
@@ -283,7 +346,6 @@ while (t < max_t):
                     node_dict[node]['power'] += p_step
                     node_dict[node]['rc'] = cal_rc(node_dict[node]['power'])
 
-    # Final achieved network
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
             continue
@@ -292,18 +354,66 @@ while (t < max_t):
             # print("CH:", node_dict[node]['CH_belong'], "node", node)
             add_neighbor(node_dict[node]['CH_belong'], node)
 
+    # Intra-cluster topology control:
+    for node in network['vertices']:
+        if node_dict[node]['e_res'] <= 0:
+            continue
+        if node_dict[node]['CH'] == True:
+            nash_eq = False
+            while nash_eq is False:
+                nash_eq = True
+                for cm_node in node_dict[node]['neighbors']: # all CMs
+                    if node_dict[cm_node]['local_net'] is None:
+                        local_net = {'vertices': [], 'edges': []}
+                        local_net['vertices'], local_net['edges'] = get_graph(cm_node, hop_max)
+                        node_dict[cm_node]['local_net'] = local_net
+
+                    e_res = node_dict[cm_node]['e_res']
+                    if node_dict[cm_node]['util'] is None:
+                        node_dict[cm_node]['util'] = ctb_benefit(node_dict[cm_node]['local_net']) - e_balance_benefit(node_dict[cm_node]['local_net']) - e_cost(node_dict[cm_node]['power'], e_res)
+                    new_power = node_dict[cm_node]['power'] - p_step
+                    new_util = None
+                    topology_changed = False
+                    old_neighbors = node_dict[cm_node]['neighbors']
+
+                    # check connection between around each CM
+                    for neighbor in old_neighbors:
+                        d = math.hypot(cm_node[0] - neighbor[0], cm_node[1] - neighbor[1])
+                        p_rx = cal_rx_power(new_power, d)
+                        if p_rx < pth:      # remove connection if power is smaller than threshold
+                            topology_changed = True
+                            node_dict[cm_node]['neighbors'].remove(neighbor)
+
+                    new_local_net = {'vertices': [], 'edges': []}
+                    new_local_net['vertices'], new_local_net['edges'] = get_graph(cm_node, hop_max)
+
+                    if len(new_local_net['vertices']) != len(local_net['vertices']):
+                        new_util = -1.0 * e_cost(new_power, e_res)
+                    else:
+                        new_util = ctb_benefit(new_local_net) - e_balance_benefit(new_local_net) - e_cost(new_power, e_res)
+
+                    if new_util > node_dict[cm_node]['util']:
+                        node_dict[cm_node]['util'] = new_util
+                        node_dict[cm_node]['power'] = new_power
+                        nash_eq = False
+                        if topology_changed is True:
+                            node_dict[cm_node]['local_net'] = new_local_net
+                    else:
+                        node_dict[cm_node]['neighbors'] = old_neighbors
+
+    # Final achieved network
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
             continue
 
         if node_dict[node]['CH'] == True:
             for neighbor in node_dict[node]['CH_neighbors']:
-                if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
+                if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
                     network['edges'].append((node, neighbor))
-        # else:
-        for neighbor in node_dict[node]['neighbors']:
-            if (node, neighbor) not in network['edges'] or (neighbor, node) not in network['edges']:
-                network['edges'].append((node, neighbor))
+        else:
+            for neighbor in node_dict[node]['neighbors']:
+                if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
+                    network['edges'].append((node, neighbor))
 
     # Enengy consumption
     for node in network['vertices']:
