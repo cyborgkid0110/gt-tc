@@ -94,7 +94,7 @@ def e_cost_func(x):
     return np.exp(x/10)
 
 def e_cost(tx_power, e_res):
-    M = 0.1
+    M = 0.01
     T = 1.0
     cost = integrate.quad(e_cost_func, e0 - e_res, e0 - e_res + tx_power * T)
     return cost[0] / M
@@ -128,7 +128,7 @@ def get_graph(node, hop):
     vertices = set([node])
     edges = set()
 
-    if len(node_dict[node]['neighbors']) == 0:
+    if len(node_dict[node]['neighbors']) == 0 or node_dict[node]['CH'] == True:
         return list(vertices), list(edges)
 
     if hop != 1:
@@ -208,6 +208,7 @@ for node1 in network['vertices']:
             # node_dict[node1]['neighbors'].append(node2)
 
 test_node = None
+once = 0
 while (t < max_t):
     CH_con = 0
     CH_can = 0
@@ -267,7 +268,7 @@ while (t < max_t):
         if node_dict[node1]['CH'] == True: # CH set to max tx power
             node_dict[node1]['power'] = p_max
             node_dict[node1]['rc'] = cal_rc(p_max)
-            node_dict[node]['c_ch'] = cal_cost(node_dict[node], node[0], node[1], "CH")
+            node_dict[node1]['c_ch'] = cal_cost(node_dict[node], node[0], node[1], "CH")
             for node2 in network['vertices']:
                 if node1 == node2:
                     continue
@@ -300,20 +301,16 @@ while (t < max_t):
         
         if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
             for neighbor in node_dict[node]['neighbors'][:]:
-                if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
-                    node_dict[node]['neighbors'].remove(neighbor)
+                if node_dict[neighbor]['CH'] == True:
+                    if neighbor != node_dict[node]['CH_belong']:
+                        node_dict[node]['neighbors'].remove(neighbor)
+                else:      
+                    if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
+                        node_dict[node]['neighbors'].remove(neighbor)
         else:
-            node_dict[node]['neighbors'] = []
-
-    for node in network['vertices']:
-        if node_dict[node]['e_res'] <= 0:
-            continue
-
-        if node_dict[node]['CH'] == False and len(node_dict[node]['neighbors']) != 0:
-            for neighbor in node_dict[node]['neighbors']:
-                if node_dict[neighbor]['CH'] == False:
-                    if node_dict[node]['CH_belong'] != node_dict[neighbor]['CH_belong']:
-                        print('Detected', node, neighbor)
+            for neighbor in node_dict[node]['neighbors'][:]:
+                if node_dict[neighbor]['CH_belong'] != node:
+                    node_dict[node]['neighbors'].remove(neighbor)
     
     # Unconnected nodes will try to join a cluster by sending join request to surrounding node
     extended_cluster = 0
@@ -351,16 +348,65 @@ while (t < max_t):
             continue
 
         if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
-            # print("CH:", node_dict[node]['CH_belong'], "node", node)
             add_neighbor(node_dict[node]['CH_belong'], node)
+
+    # Check network
+    for node in network['vertices']:
+        if node_dict[node]['e_res'] <= 0:
+            continue
+
+        if node_dict[node]['CH'] == False:
+            # for neighbor in node_dict[node]['CH_neighbors']:
+            #     if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
+            #         network['edges'].append((node, neighbor))
+        # else:
+            for neighbor in node_dict[node]['neighbors']:
+                if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
+                    network['edges'].append((node, neighbor))
+
+    # Plotting node coverage
+    fig2, ax2 = plt.subplots(figsize=(6, 6))
+    ax2.set_xlim(-area, area)
+    ax2.set_ylim(-area, area)
+    ax2.set_aspect('equal', adjustable='box')
+    ax2.set_title("Sensor Node Coverage")
+    ax2.set_xlabel("X Position")
+    ax2.set_ylabel("Y Position")
+    ax2.grid(True)
+
+    # Plot links between nodes
+    for edge in network['edges']:
+        node1, node2 = edge
+        x_values = [node1[0], node2[0]]
+        y_values = [node1[1], node2[1]]
+        ax2.plot(x_values, y_values, 'k-', linewidth=1, alpha=0.5)  # Black lines for links
+
+    # Plot nodes and their coverage
+    for (x, y) in network['vertices']:
+        if node_dict[(x, y)]['CH'] == True: 
+            circle = patches.Circle((x, y), node_dict[(x, y)]['rc'], edgecolor='blue', facecolor='lightblue', alpha=0.3)
+            ax2.add_patch(circle)
+        
+        if node_dict[(x, y)]['CH'] == True:
+            ax2.plot(x, y, 'ro')  # Red dot for CH
+        else:
+            ax2.plot(x, y, 'bo')  # Blue dot for non-CH
+
+    node_patch = patches.Patch(color='lightblue', label='Coverage')
+    ax2.legend(handles=[node_patch])
+    print(f'Round: {t}, Participated Nodes: {CH_con}, Total Candidate CH: {CH_can}, Total Real CH: {CH_true}')
+    network['edges'] = []
 
     # Intra-cluster topology control:
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
             continue
         if node_dict[node]['CH'] == True:
+            test_node = None
+            time = 0
             nash_eq = False
             while nash_eq is False:
+                # print(f'Retry: {time}, Node: {node}')
                 nash_eq = True
                 for cm_node in node_dict[node]['neighbors']: # all CMs
                     if node_dict[cm_node]['local_net'] is None:
@@ -372,6 +418,8 @@ while (t < max_t):
                     if node_dict[cm_node]['util'] is None:
                         node_dict[cm_node]['util'] = ctb_benefit(node_dict[cm_node]['local_net']) - e_balance_benefit(node_dict[cm_node]['local_net']) - e_cost(node_dict[cm_node]['power'], e_res)
                     new_power = node_dict[cm_node]['power'] - p_step
+                    if new_power < p_min:
+                        new_power = p_min
                     new_util = None
                     topology_changed = False
                     old_neighbors = node_dict[cm_node]['neighbors']
@@ -388,29 +436,49 @@ while (t < max_t):
                     new_local_net['vertices'], new_local_net['edges'] = get_graph(cm_node, hop_max)
 
                     if len(new_local_net['vertices']) != len(local_net['vertices']):
-                        new_util = -1.0 * e_cost(new_power, e_res)
+                        new_util = -100.0 * e_cost(new_power, e_res)
                     else:
+                        # print('-------------------------------------------')
+                        # print('Node: ', cm_node)
+                        # print('Contribute benefit: ', ctb_benefit(new_local_net))
+                        # print('Energy balance benefit: ', e_balance_benefit(new_local_net))
+                        # print('Cost: ', e_cost(new_power, e_res))
                         new_util = ctb_benefit(new_local_net) - e_balance_benefit(new_local_net) - e_cost(new_power, e_res)
 
                     if new_util > node_dict[cm_node]['util']:
                         node_dict[cm_node]['util'] = new_util
                         node_dict[cm_node]['power'] = new_power
                         nash_eq = False
+                        if len(node_dict[cm_node]['neighbors']) != len(old_neighbors):
+                            print("Change neighbor", cm_node)
+                        if test_node == None:
+                            test_node = cm_node
+
+                        if cm_node == test_node and once < 200:
+                            once += 1
+                            # print('-------------------------------------------')
+                            # print(f'Node: {cm_node}, new power: {new_power}')
+                            # print('Contribute benefit: ', ctb_benefit(new_local_net))
+                            # print('Energy balance benefit: ', e_balance_benefit(new_local_net))
+                            # print('Cost: ', e_cost(new_power, e_res))
                         if topology_changed is True:
                             node_dict[cm_node]['local_net'] = new_local_net
                     else:
                         node_dict[cm_node]['neighbors'] = old_neighbors
+
+                if nash_eq is False:
+                    time += 1
 
     # Final achieved network
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
             continue
 
-        if node_dict[node]['CH'] == True:
-            for neighbor in node_dict[node]['CH_neighbors']:
-                if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
-                    network['edges'].append((node, neighbor))
-        else:
+        if node_dict[node]['CH'] == False:
+            # for neighbor in node_dict[node]['CH_neighbors']:
+            #     if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
+            #         network['edges'].append((node, neighbor))
+        # else:
             for neighbor in node_dict[node]['neighbors']:
                 if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
                     network['edges'].append((node, neighbor))
@@ -434,7 +502,7 @@ while (t < max_t):
         break
 
     t += 1
-    print(f'Round: {t}, Participated Nodes: {CH_con}, Total Candidate CH: {CH_can}, Total Real CH: {CH_true}')
+    # print(f'Round: {t}, Participated Nodes: {CH_con}, Total Candidate CH: {CH_can}, Total Real CH: {CH_true}')
 
     # Plotting node coverage
     fig1, ax1 = plt.subplots(figsize=(6, 6))
