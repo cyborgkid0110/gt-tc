@@ -1,4 +1,39 @@
 import matplotlib.pyplot as plt
+import networkx as nx
+
+def directional_wsn_plot(network, node_dict):
+    # Create directed graph
+    G = nx.DiGraph()
+
+    positions = {}  # Map: index -> (x, y)
+    color_map = []
+
+    # Add nodes
+    for idx, pos in enumerate(network['vertices']):
+        G.add_node(idx)
+        positions[idx] = pos
+        if node_dict[pos]['CH']:
+            color_map.append('red')  # Cluster Head
+        else:
+            color_map.append('skyblue')  # Regular node
+
+    # Add directed edges based on adjacency matrix
+    adj = network['edges']
+    for i in range(len(adj)):
+        for j in range(len(adj)):
+            if adj[i][j] == 1:
+                G.add_edge(i, j)
+
+    # Draw the graph
+    plt.figure(figsize=(10, 8))
+    nx.draw_networkx_nodes(G, positions, node_color=color_map, node_size=100)
+    nx.draw_networkx_edges(G, positions, edge_color='gray', arrows=True, arrowstyle='->', alpha=0.3)
+    nx.draw_networkx_labels(G, positions, labels={i: str(i) for i in G.nodes()}, font_size=5, font_color='black')
+
+    plt.title("Wireless Sensor Network with Cluster Heads (Red)")
+    plt.axis('off')
+    plt.tight_layout()
+    plt.show()
 
 def mapplot(nodes, area, actives, linking, local_net):
     x_coords = [node[0] for node in nodes]

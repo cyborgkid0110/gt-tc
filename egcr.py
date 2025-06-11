@@ -100,6 +100,8 @@ def e_cost(tx_power, e_res):
     return cost[0] / M
 
 def ctb_benefit(network):
+    if len(network['vertices']) == 0:
+        return 0
     BETA = 1.5
     return BETA * len(network['vertices'])
 
@@ -163,11 +165,13 @@ ch_costs = []
 cm_costs = []
 
 # Generate node with Poisson Disk Sampling
-rng = np.random.default_rng()
+seed = 42
+rng = np.random.default_rng(seed)
 radius = 30
 engine = qmc.PoissonDisk(d=2, radius=radius, rng=rng, ncandidates=num_nodes, l_bounds=0, u_bounds=area * 2)
 sample = engine.random(num_nodes)
 not_generated_nodes = num_nodes - len(sample)
+
 while (not_generated_nodes > 0):
     row = np.round(np.random.rand(1, 2) * area * 2, 2)
     sample = np.append(sample, row, axis=0)
@@ -179,6 +183,7 @@ for i in range(0, len(sample)):
     
     node_dict[(xn, yn)] = {
         'neighbors': [],
+        'closest_neighbor': None,
         'power': p_max / 4,
         'rc': cal_rc(p_max / 4),
         'e_res': e0,
@@ -189,7 +194,7 @@ for i in range(0, len(sample)):
         'CH_neighbors': [],
         'c_ch': 0,
         'c_cm': 0,
-
+        
         'util': None,
         'local_net': None
     }
@@ -207,12 +212,59 @@ for node1 in network['vertices']:
             add_neighbor(node1, node2)
             # node_dict[node1]['neighbors'].append(node2)
 
+ # Check network
+for node in network['vertices']:
+    if node_dict[node]['e_res'] <= 0:
+        continue
+
+    if node_dict[node]['CH'] == False:
+        # for neighbor in node_dict[node]['CH_neighbors']:
+        #     if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
+        #         network['edges'].append((node, neighbor))
+    # else:
+        for neighbor in node_dict[node]['neighbors']:
+            if (node, neighbor) not in network['edges'] and (neighbor, node) not in network['edges']:
+                network['edges'].append((node, neighbor))
+
+# Plotting node coverage
+fig3, ax3 = plt.subplots(figsize=(6, 6))
+ax3.set_xlim(-area, area)
+ax3.set_ylim(-area, area)
+ax3.set_aspect('equal', adjustable='box')
+ax3.set_title("Sensor Node Coverage")
+ax3.set_xlabel("X Position")
+ax3.set_ylabel("Y Position")
+ax3.grid(True)
+
+# Plot links between nodes
+for edge in network['edges']:
+    node1, node2 = edge
+    x_values = [node1[0], node2[0]]
+    y_values = [node1[1], node2[1]]
+    ax3.plot(x_values, y_values, 'k-', linewidth=1, alpha=0.5)  # Black lines for links
+
+# Plot nodes and their coverage
+for (x, y) in network['vertices']:
+    if node_dict[(x, y)]['CH'] == True: 
+        circle = patches.Circle((x, y), node_dict[(x, y)]['rc'], edgecolor='blue', facecolor='lightblue', alpha=0.3)
+        ax3.add_patch(circle)
+    
+    if node_dict[(x, y)]['CH'] == True:
+        ax3.plot(x, y, 'ro')  # Red dot for CH
+    else:
+        ax3.plot(x, y, 'bo')  # Blue dot for non-CH
+
+node_patch = patches.Patch(color='lightblue', label='Coverage')
+ax3.legend(handles=[node_patch])
+network['edges'] = []
+
 test_node = None
 once = 0
 while (t < max_t):
     CH_con = 0
     CH_can = 0
     CH_true = 0
+
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
             continue
@@ -221,7 +273,7 @@ while (t < max_t):
         # Reset CH node to default settings
         if node_dict[node]['CH'] == True:
             node_dict[node]['power'] = p_max / 4
-            node_dict[node1]['rc'] = cal_rc(p_max / 4)
+            node_dict[node]['rc'] = cal_rc(p_max / 4)
             node_dict[node]['CH_neighbors'] = []
             node_dict[node]['CH'] = False
             continue
@@ -269,6 +321,7 @@ while (t < max_t):
             node_dict[node1]['power'] = p_max
             node_dict[node1]['rc'] = cal_rc(p_max)
             node_dict[node1]['c_ch'] = cal_cost(node_dict[node], node[0], node[1], "CH")
+
             for node2 in network['vertices']:
                 if node1 == node2:
                     continue
@@ -299,24 +352,42 @@ while (t < max_t):
         if node_dict[node]['e_res'] <= 0:
             continue
         
+        # Node is CM
         if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
             for neighbor in node_dict[node]['neighbors'][:]:
+                # Neighbor is CH
                 if node_dict[neighbor]['CH'] == True:
                     if neighbor != node_dict[node]['CH_belong']:
                         node_dict[node]['neighbors'].remove(neighbor)
                 else:      
                     if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
                         node_dict[node]['neighbors'].remove(neighbor)
+        # Node is CH
         else:
             for neighbor in node_dict[node]['neighbors'][:]:
                 if node_dict[neighbor]['CH_belong'] != node:
                     node_dict[node]['neighbors'].remove(neighbor)
-    
+        # Node that not in any cluster will keep the neighbor list
+
+        # Update the closest neighbor
+        if len(node_dict[node]['neighbors']) != 0:
+            d_min = None
+            for neighbor in node_dict[node]['neighbors']:
+                xn, yn = node
+                x_neighbor, y_neighbor = neighbor
+                d = math.hypot(xn - x_neighbor, yn - y_neighbor)
+                if d_min is None:
+                    node_dict[node]['closest_neighbor'] = neighbor
+                elif d < d_min:
+                    node_dict[node]['closest_neighbor'] = neighbor
+
     # Unconnected nodes will try to join a cluster by sending join request to surrounding node
     extended_cluster = 0
     while (extended_cluster == 0):
         extended_cluster = 1
+
         for node in network['vertices']:
+            # if there exists at least 1 node that haven't joined any cluster, flag is triggered
             if node_dict[node]['CH_belong'] is None and node_dict[node]['CH'] == False:
                 extended_cluster = 0
 
@@ -324,8 +395,9 @@ while (t < max_t):
                     if node == node2:
                         continue
                     d = math.hypot(node[0] - node2[0], node[1] - node2[1])
-                    # Only CM can received the message. Node received first ACK will set CH belong
+                    # Only CM can received the message.
                     if node_dict[node]['rc'] >= d:
+                        # If node is in a cluster, adjust the tx power and send ACK
                         if node_dict[node2]['CH_belong'] is not None:
                             if node_dict[node]['power'] > node_dict[node2]['power']:
                                 node_dict[node2]['power'] = node_dict[node]['power']
@@ -333,16 +405,32 @@ while (t < max_t):
                         
                             if node_dict[node]['CH_belong'] is None:
                                 node_dict[node]['CH_belong'] = node_dict[node2]['CH_belong']
+                            else:
+                                xn, yn = node
+                                x_ch_old, y_ch_old = node_dict[node]['CH_belong']           # old CH
+                                x_ch_temp, y_ch_temp = node_dict[node2]['CH_belong']        # new CH
+                                d1 = math.hypot(xn - x_ch_old, yn - y_ch_old)
+                                d2 = math.hypot(xn - x_ch_temp, yn - y_ch_temp)
+                                if d1 > d2:
+                                    node_dict[node]['CH_belong'] = node_dict[node2]['CH_belong']
 
+                            # After joined temporarily a cluster, two nodes add the 
                             if node_dict[node]['CH_belong'] == node_dict[node2]['CH_belong']:
                                 add_neighbor(node, node2)
                                 add_neighbor(node2, node)
+
+                # After joined the cluster, node starts to remove neighbor from other clusters
+                if node_dict[node]['CH_belong'] is not None:
+                    for neighbor in node_dict[node]['neighbors'][:]:
+                        if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
+                            delete_neighbor(node, neighbor)
+                            delete_neighbor(neighbor, node)
 
                 # If no ACK is received, node increases the power transmission
                 if node_dict[node]['CH_belong'] is None:
                     node_dict[node]['power'] += p_step
                     node_dict[node]['rc'] = cal_rc(node_dict[node]['power'])
-
+                    
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
             continue
@@ -397,6 +485,7 @@ while (t < max_t):
     print(f'Round: {t}, Participated Nodes: {CH_con}, Total Candidate CH: {CH_can}, Total Real CH: {CH_true}')
     network['edges'] = []
 
+    print(len(network['vertices']))
     # Intra-cluster topology control:
     for node in network['vertices']:
         if node_dict[node]['e_res'] <= 0:
@@ -405,14 +494,15 @@ while (t < max_t):
             test_node = None
             time = 0
             nash_eq = False
+            change_nodes = []
             while nash_eq is False:
                 # print(f'Retry: {time}, Node: {node}')
                 nash_eq = True
                 for cm_node in node_dict[node]['neighbors']: # all CMs
-                    if node_dict[cm_node]['local_net'] is None:
-                        local_net = {'vertices': [], 'edges': []}
-                        local_net['vertices'], local_net['edges'] = get_graph(cm_node, hop_max)
-                        node_dict[cm_node]['local_net'] = local_net
+                    # if node_dict[cm_node]['local_net'] is None:
+                    local_net = {'vertices': [], 'edges': []}
+                    local_net['vertices'], local_net['edges'] = get_graph(cm_node, hop_max)
+                    node_dict[cm_node]['local_net'] = local_net
 
                     e_res = node_dict[cm_node]['e_res']
                     if node_dict[cm_node]['util'] is None:
@@ -434,7 +524,7 @@ while (t < max_t):
 
                     new_local_net = {'vertices': [], 'edges': []}
                     new_local_net['vertices'], new_local_net['edges'] = get_graph(cm_node, hop_max)
-
+                    
                     if len(new_local_net['vertices']) != len(local_net['vertices']):
                         new_util = -100.0 * e_cost(new_power, e_res)
                     else:
@@ -449,6 +539,9 @@ while (t < max_t):
                         node_dict[cm_node]['util'] = new_util
                         node_dict[cm_node]['power'] = new_power
                         nash_eq = False
+                        if cm_node not in change_nodes:
+                            change_nodes.append(cm_node)
+                            print("Change node", cm_node)
                         if len(node_dict[cm_node]['neighbors']) != len(old_neighbors):
                             print("Change neighbor", cm_node)
                         if test_node == None:
