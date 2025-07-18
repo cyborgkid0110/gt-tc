@@ -31,7 +31,17 @@ def directional_wsn_plot(network, node_dict):
     nx.draw_networkx_labels(G, positions, labels={i: str(i) for i in G.nodes()}, font_size=5, font_color='black')
 
     plt.title("Wireless Sensor Network with Cluster Heads (Red)")
-    plt.axis('off')
+    plt.axis('on')
+    plt.grid(True, 
+         which='both',  # Show both major and minor grid lines
+         linestyle='--',  # Dashed lines
+         color='gray',    # Grid color
+         alpha=0.5,       # Transparency (0-1)
+         linewidth=0.5)   # Line thickness
+    
+    plt.xticks(range(-250, 250, 50))  # Major grid lines every 20 units on x-axis
+    plt.yticks(range(-250, 250, 50)) # Major grid lines every 20 units on y-axis
+    
     plt.tight_layout()
     plt.show()
 

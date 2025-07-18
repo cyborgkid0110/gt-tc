@@ -15,6 +15,7 @@ dead_nodes_t = []
 area = 250
 xs, ys = (0, 0)
 
+# system parameters
 e0 = 1                     # initial energy of the nodes
 eth = 20                    # threshold energy
 pth = 0.5*pow(10, -9)         # power threshold
@@ -28,6 +29,7 @@ p_max = 0.08
 p_step = 0.0001
 wave = 0.1224
 
+# game 1 parameters
 e_mp = 0.0013*pow(10, -12)
 e_fs = 10*pow(10, -12)
 e_elec = 50*pow(10, -9)
@@ -36,6 +38,11 @@ d0 = math.sqrt(e_fs/e_mp)
 m_pkt_s = 20
 m_pkt_l = 500
 payoff = 0.02
+
+# game 2 parametersa
+ALPHA = 1.5     # e_balance_benefit
+BETA = 1.5      # ctb_benefit
+M = 0.01        # e_cost
 
 def cal_rc(power):
     distance = math.sqrt((power*wave*wave)/(pth*16*math.pi*math.pi))
@@ -92,7 +99,6 @@ def e_cost_func(x):
     return np.exp(x/10)
 
 def e_cost(tx_power, e_res):
-    M = 0.01
     T = 1.0
     cost = integrate.quad(e_cost_func, e0 - e_res, e0 - e_res + tx_power * T)
     return cost[0] / M
@@ -101,11 +107,9 @@ def ctb_benefit(node, hop):
     vertices = get_vertices(node, hop)
     if len(vertices) == 0:
         return 0
-    BETA = 1.5
     return BETA * len(vertices)
 
 def e_balance_benefit(network):
-    ALPHA = 1.5
     e_res_all = []
     sum_e_res = 0
     avg_e_res = 0
@@ -195,7 +199,7 @@ def update_global_network(global_network, local_network):
             global_network['edges'][i2, j2] = local_network['edges'][i1, j1]
 
 t = 0
-max_t = 10000
+max_t = 50000
 
 node_dict = {}
 
@@ -203,8 +207,6 @@ network = {
     'edges': None,
     'vertices': [],
 }
-
-network['edges'] = np.zeros((num_nodes, num_nodes), dtype=int)
 
 # Lists to store costs for plotting
 sensing_costs = []
@@ -231,12 +233,14 @@ for i in range(0, len(sample)):
     network['vertices'].append((xn, yn))
     
     node_dict[(xn, yn)] = {
+        'id': i,
         'neighbors': [],
         'power': p_max / 4,
         'rc': cal_rc(p_max / 4),
         'e_res': e0,
         'Vpre': random.uniform(2.7, 4.2),
         'p0': None,
+        'p_ch': None,
         'CH': False,
         'CH_belong': None,
         'CH_neighbors': [],
@@ -249,23 +253,36 @@ for i in range(0, len(sample)):
 
 print("Generated done")
 
-# Each node broadcast ADV message
-# After receiving ADV, each node detect the number of neighboring nodes
-for i in range(0, num_nodes):
-    node1 = network['vertices'][i]
-    for j in range(0, num_nodes):
-        if i == j:
-            continue
-        node2 = network['vertices'][j]
-        d = math.hypot(node1[0] - node2[0], node1[1] - node2[1])
-        if node_dict[node1]['rc'] >= d:
-            network['edges'][i, j] = 1
-            add_neighbor(node1, node2)
-
 while (t < max_t):
     CH_con = 0
     CH_can = 0
     CH_true = 0
+    end_loop = False
+    
+    # reset network for each round
+    network['edges'] = np.zeros((num_nodes, num_nodes), dtype=int)
+    for i in range(0, num_nodes):
+        node = network['vertices'][i]
+        node_dict[node]['power'] = p_max / 4
+        node_dict[node]['rc'] = cal_rc(p_max / 4)
+        node_dict[node]['neighbors'] = []
+        node_dict[node]['CH_belong'] = None
+        node_dict[node]['util'] = None
+        node_dict[node]['local_net'] = None
+    
+    # Each node broadcast ADV message
+    # After receiving ADV, each node detect the number of neighboring nodes
+    for i in range(0, num_nodes):
+        node1 = network['vertices'][i]
+        for j in range(0, num_nodes):
+            if i == j:
+                continue
+            node2 = network['vertices'][j]
+            d = math.hypot(node1[0] - node2[0], node1[1] - node2[1])
+            if node_dict[node1]['rc'] >= d:
+                network['edges'][i, j] = 1
+                add_neighbor(node1, node2)
+                
 
     for i in range(0, num_nodes):
         node = network['vertices'][i]
@@ -296,8 +313,11 @@ while (t < max_t):
         node_dict[node]['p0'] = p0
         if random.random() < p0:
             p_ch = p0 * node_dict[node]['e_res'] / e0
+            node_dict[node]['p_ch'] = p_ch
             t_ge = p_ch / (1 - p_ch * (t % (1/p_ch)))
-            if (random.uniform(0, 1) < t_ge):
+            # print(f'Node {i}: {t_ge}')
+            if (random.uniform(0, 1) < p_ch):
+            # if (random.uniform(0, 1) < t_ge):
                 node_dict[node]['CH'] = True
                 CH_true += 1      
             else:
@@ -466,7 +486,7 @@ while (t < max_t):
             j = network['vertices'].index(neighbor)
             modified_network['edges'][i, j] = 0
 
-    directional_wsn_plot(modified_network, node_dict)   
+    # directional_wsn_plot(modified_network, node_dict)   
     
     G = graph.build_graph(modified_network['vertices'], modified_network['edges'])
     layered_batches_per_cluster = graph.divide_network_by_clusters(G, node_dict)
@@ -507,7 +527,7 @@ while (t < max_t):
                         # print("CH: ", ch_node)
                         # print("CM: ", cm_node)
                         # print(new_local_net)
-                        print(new_power)
+                        # print(new_power)
 
                         # check connection between around each CM
                         for neighbor in node_dict[cm_node]['neighbors'][:]:
@@ -546,7 +566,7 @@ while (t < max_t):
                         else:
                             node_dict[cm_node]['neighbors'] = old_neighbors
 
-    print('Finished')
+    print(f'Iteration {t}: Finished, Candicate CH: {CH_can}, Real CH: {CH_true}')
     for i in range(0, num_nodes):
         ch_node = network['vertices'][i]
         if node_dict[ch_node]['e_res'] <= 0 or node_dict[ch_node]['CH'] == False:
@@ -566,5 +586,24 @@ while (t < max_t):
         for neighbor in node_dict[ch_node]['CH_neighbors']:
             j = network['vertices'].index(neighbor)
             modified_network['edges'][i, j] = 0
+                      
+    # directional_wsn_plot(modified_network, node_dict)
+    
+    # maintainance phase
+    for i in range(0, num_nodes):
+        node = network['vertices'][i]
+        
+        if node_dict[node]['CH'] == True:
+            node_dict[node]['e_res'] -= node_dict[node]['c_ch']
+        else:
+            node_dict[node]['e_res'] -= node_dict[node]['c_cm']
+            
+        if node_dict[node]['e_res'] < 0:
+            node_dict[node]['e_res'] = 0
+            end_loop = True
+    
+    if end_loop == True:
+        break
+    t += 1
 
-    directional_wsn_plot(modified_network, node_dict)   
+print(f'Iterations without dead node: {t}')
