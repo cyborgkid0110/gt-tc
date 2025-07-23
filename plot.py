@@ -44,6 +44,48 @@ def directional_wsn_plot(network, node_dict):
     
     plt.tight_layout()
     plt.show()
+    
+def cluster_head_probability_plot(network, node_dict):
+    # Create directed graph
+    G = nx.DiGraph()
+    positions = {}  # Map: index -> (x, y)
+
+    # Add nodes
+    for idx, pos in enumerate(network['vertices']):
+        G.add_node(idx)
+        positions[idx] = pos
+
+    # Add directed edges based on adjacency matrix
+    adj = network['edges']
+    for i in range(len(adj)):
+        for j in range(len(adj)):
+            if adj[i][j] == 1:
+                G.add_edge(i, j)
+
+    # Get p_ch values for coloring
+    p_ch_values = [node_dict[pos]['p_ch'] for pos in network['vertices']]
+
+    # Draw the graph
+    plt.figure(figsize=(10, 8))
+    nodes = nx.draw_networkx_nodes(G, positions, node_color=p_ch_values, cmap=plt.cm.viridis, vmin=0, vmax=1, node_size=100)
+    nx.draw_networkx_edges(G, positions, edge_color='gray', arrows=True, arrowstyle='->', alpha=0.3)
+    nx.draw_networkx_labels(G, positions, labels={i: str(i) for i in G.nodes()}, font_size=5, font_color='black')
+
+    plt.title("Wireless Sensor Network with Nodes Colored by p_ch Value")
+    plt.axis('on')
+    plt.grid(True, 
+             which='both',    # Show both major and minor grid lines
+             linestyle='--',  # Dashed lines
+             color='gray',    # Grid color
+             alpha=0.5,       # Transparency (0-1)
+             linewidth=0.5)   # Line thickness
+    
+    plt.xticks(range(-250, 250, 50))  # Major grid lines every 50 units on x-axis
+    plt.yticks(range(-250, 250, 50))  # Major grid lines every 50 units on y-axis
+    
+    plt.colorbar(nodes, label='p_ch value')
+    plt.tight_layout()
+    plt.show()
 
 def mapplot(nodes, area, actives, linking, local_net):
     x_coords = [node[0] for node in nodes]

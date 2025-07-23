@@ -6,7 +6,7 @@ import numpy as np
 from scipy.stats import qmc
 from scipy import integrate
 import csv
-from plot import directional_wsn_plot
+from plot import directional_wsn_plot, cluster_head_probability_plot
 import graph
 
 num_nodes = 200
@@ -16,7 +16,7 @@ area = 250
 xs, ys = (0, 0)
 
 # system parameters
-e0 = 1                     # initial energy of the nodes
+e0 = 0.5                     # initial energy of the nodes
 eth = 20                    # threshold energy
 pth = 0.5*pow(10, -9)         # power threshold
 hop_max = 2                 # number of neighbor hops
@@ -37,11 +37,11 @@ e_agg = 5*pow(10, -9)
 d0 = math.sqrt(e_fs/e_mp)
 m_pkt_s = 20
 m_pkt_l = 500
-payoff = 0.02
+payoff = 0.01
 
 # game 2 parametersa
 ALPHA = 1.5     # e_balance_benefit
-BETA = 1.5      # ctb_benefit
+BETA = 0.1      # ctb_benefit
 M = 0.01        # e_cost
 
 def cal_rc(power):
@@ -263,12 +263,13 @@ while (t < max_t):
     network['edges'] = np.zeros((num_nodes, num_nodes), dtype=int)
     for i in range(0, num_nodes):
         node = network['vertices'][i]
-        node_dict[node]['power'] = p_max / 4
-        node_dict[node]['rc'] = cal_rc(p_max / 4)
+        # node_dict[node]['power'] = p_max / 4
+        # node_dict[node]['rc'] = cal_rc(p_max / 4)
         node_dict[node]['neighbors'] = []
         node_dict[node]['CH_belong'] = None
         node_dict[node]['util'] = None
         node_dict[node]['local_net'] = None
+        node_dict[node]['p_ch'] = None
     
     # Each node broadcast ADV message
     # After receiving ADV, each node detect the number of neighboring nodes
@@ -486,7 +487,7 @@ while (t < max_t):
             j = network['vertices'].index(neighbor)
             modified_network['edges'][i, j] = 0
 
-    # directional_wsn_plot(modified_network, node_dict)   
+    # cluster_head_probability_plot(modified_network, node_dict)   
     
     G = graph.build_graph(modified_network['vertices'], modified_network['edges'])
     layered_batches_per_cluster = graph.divide_network_by_clusters(G, node_dict)
@@ -586,24 +587,32 @@ while (t < max_t):
         for neighbor in node_dict[ch_node]['CH_neighbors']:
             j = network['vertices'].index(neighbor)
             modified_network['edges'][i, j] = 0
-                      
-    # directional_wsn_plot(modified_network, node_dict)
+          
+    if t % 50 == 0:
+        directional_wsn_plot(modified_network, node_dict)
     
     # maintainance phase
     for i in range(0, num_nodes):
         node = network['vertices'][i]
+        # skip dead nodes
+        if node_dict[node]['e_res'] <= 0:
+            continue
         
         if node_dict[node]['CH'] == True:
             node_dict[node]['e_res'] -= node_dict[node]['c_ch']
         else:
             node_dict[node]['e_res'] -= node_dict[node]['c_cm']
             
-        if node_dict[node]['e_res'] < 0:
-            node_dict[node]['e_res'] = 0
-            end_loop = True
+        if node_dict[node]['e_res'] <= 0:
+            # node_dict[node]['e_res'] = 0
+            dead_nodes += 1
+            # end_loop = True
     
-    if end_loop == True:
+    if dead_nodes == num_nodes:
         break
+    
+    # if end_loop == True:
+    #     break
     t += 1
 
 print(f'Iterations without dead node: {t}')
