@@ -76,6 +76,8 @@ def delete_neighbor(node, neighbor):
 
 def cal_cost(node_info, xn, yn, role):
     m_bit = 8
+    # Wrong, see energy model again
+    # d should be distance between transmitter and receiver
     d = math.sqrt(xn*xn + yn*yn)
     c_tx = cal_tx_cost(d, role)
     c_total = 0
@@ -277,10 +279,14 @@ while (t < max_t):
     # After receiving ADV, each node detect the number of neighboring nodes
     for i in range(0, num_nodes):
         node1 = network['vertices'][i]
+        if node_dict[node1]['e_res'] <= 0:
+            continue
+        
         for j in range(0, num_nodes):
-            if i == j:
-                continue
             node2 = network['vertices'][j]
+            if i == j or node_dict[node2]['e_res'] <= 0:
+                continue
+            
             d = math.hypot(node1[0] - node2[0], node1[1] - node2[1])
             if node_dict[node1]['rc'] >= d:
                 network['edges'][i, j] = 1
@@ -341,10 +347,8 @@ while (t < max_t):
             node_dict[ch_node]['c_ch'] = cal_cost(node_dict[ch_node], ch_node[0], ch_node[1], "CH")
             
             for j in range(0, num_nodes):
-                if i == j:
-                    continue
                 node = network['vertices'][j]
-                if node_dict[node]['e_res'] <= 0:
+                if i == j or node_dict[node]['e_res'] <= 0:
                     continue
 
                 d = math.hypot(ch_node[0] - node[0], ch_node[1] - node[1])
@@ -414,7 +418,7 @@ while (t < max_t):
         for i in range(0, num_nodes):
             # unjoined_node means that only nodes that not joined any cluster are used in this loop
             unjoined_node = network['vertices'][i]
-            if node_dict[unjoined_node]['e_res'] < 0:
+            if node_dict[unjoined_node]['e_res'] <= 0:
                 continue
             if node_dict[unjoined_node]['CH_belong'] is not None and node_dict[unjoined_node]['CH'] == False:
                 continue
@@ -431,6 +435,8 @@ while (t < max_t):
                     continue
 
                 cm_node = network['vertices'][j]
+                if node_dict[cm_node]['e_res'] <= 0:
+                    continue
                 # since unjoined_node is impossible to reach the CHs, only need to focus on CMs.
                 if node_dict[cm_node]['CH_belong'] is None or node_dict[cm_node]['CH'] == True:
                     continue
@@ -470,6 +476,9 @@ while (t < max_t):
                         
             else:
                 node_dict[unjoined_node]['power'] += p_step
+                if node_dict[unjoined_node]['power'] > 2 * p_max:
+                    node_dict[unjoined_node]['power'] = 2 * p_max
+                    print("Reach p_max", i)
                 node_dict[unjoined_node]['rc'] = cal_rc(node_dict[unjoined_node]['power'])
 
     for i in range(0, num_nodes):
@@ -489,8 +498,8 @@ while (t < max_t):
     modified_network = network
     cm_node_rc = cal_rc(p_max / 4)
     
-    if t % 50 == 0:
-        directional_wsn_plot(modified_network, node_dict)
+    # if t % 1 == 0:
+    #     directional_wsn_plot(modified_network, node_dict)
     
     # remove connection between CH and CMs (for plotting graph)
     for i in range(0, num_nodes):
@@ -619,6 +628,25 @@ while (t < max_t):
           
     if t % 50 == 0:
         directional_wsn_plot(modified_network, node_dict)
+        
+    for i in range(0, num_nodes):
+        node = network['vertices'][i]
+        
+        if node_dict[node]['CH'] == True:
+            node_dict[node]['c_ch'] = cal_cost(node_dict[node], node[0], node[1], "CH")
+        else:
+            node_dict[node]['c_cm'] = cal_cost(node_dict[node], node[0], node[1], "CM")
+        
+        for neighbor in node_dict[node]['neighbors']:
+            if (node_dict[node]['CH_belong'] != node_dict[neighbor]['CH_belong']
+                and node_dict[node]['CH_belong'] is not None
+                and node_dict[neighbor]['CH_belong'] is not None):
+                j = network['vertices'].index(neighbor)
+                network['edges'][i, j] = 0
+                delete_neighbor(node, neighbor)
+                # print(i, network['vertices'].index(node_dict[node]['CH_belong']),
+                #       network['vertices'].index(neighbor), network['vertices'].index(node_dict[neighbor]['CH_belong']))
+                # print(f'Node: {i}, Neighbor: {network['vertices'].index(neighbor)}')
     
     # maintainance phase
     for i in range(0, num_nodes):
@@ -633,15 +661,13 @@ while (t < max_t):
             node_dict[node]['e_res'] -= node_dict[node]['c_cm']
             
         if node_dict[node]['e_res'] <= 0:
-            # node_dict[node]['e_res'] = 0
             dead_nodes += 1
-            # end_loop = True
+            print('Dead nodes:', dead_nodes)
+            
     
     if dead_nodes == num_nodes:
         break
     
-    # if end_loop == True:
-    #     break
     t += 1
 
 print(f'Iterations without dead node: {t}')

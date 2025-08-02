@@ -12,7 +12,9 @@ def directional_wsn_plot(network, node_dict):
     for idx, pos in enumerate(network['vertices']):
         G.add_node(idx)
         positions[idx] = pos
-        if node_dict[pos]['CH']:
+        if node_dict[pos]['e_res'] <= 0:
+            color_map.append('gray')    # Dead node
+        elif node_dict[pos]['CH']:
             color_map.append('red')  # Cluster Head
         else:
             color_map.append('skyblue')  # Regular node
