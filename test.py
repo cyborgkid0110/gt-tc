@@ -6,7 +6,7 @@ import numpy as np
 from scipy.stats import qmc
 from scipy import integrate
 import csv
-from plot import directional_wsn_plot, cluster_head_probability_plot
+from plot import directional_wsn_plot, cluster_head_probability_plot, tx_power_plot
 import graph
 
 num_nodes = 200
@@ -18,7 +18,7 @@ xs, ys = (0, 0)
 # system parameters
 e0 = 0.01                     # initial energy of the nodes
 eth = 20                    # threshold energy
-pth = 0.5*pow(10, -9)         # power threshold
+pth = 7*pow(10, -10)         # power threshold
 hop_max = 3                 # number of neighbor hops
 d = 50                      # cell size
 Vsta = 3.6                  # standard working voltage
@@ -37,12 +37,15 @@ e_agg = 5*pow(10, -9)
 d0 = math.sqrt(e_fs/e_mp)
 m_pkt_s = 20
 m_pkt_l = 500
-payoff = 2 * pow(10, -3)
+payoff = 8 * pow(10, -4)
 
 # game 2 parameter
 ALPHA = 1.5     # e_balance_benefit
 BETA = 0.1      # ctb_benefit
 M = 0.01        # e_cost
+
+# plot settings
+plot_period = 50
 
 def cal_rc(power):
     distance = math.sqrt((power*wave*wave)/(pth*16*math.pi*math.pi))
@@ -221,6 +224,8 @@ transmitting_costs = []
 ch_costs = []
 cm_costs = []
 
+cm_first_list = []
+
 # Generate node with Poisson Disk Sampling
 seed = 42
 rng = np.random.default_rng(seed)
@@ -264,13 +269,14 @@ while (t < max_t):
     CH_can = 0
     CH_true = 0
     end_loop = False
+    cm_first_list = []
     
     # reset network for each round
     network['edges'] = np.zeros((num_nodes, num_nodes), dtype=int)
     for i in range(0, num_nodes):
         node = network['vertices'][i]
-        node_dict[node]['power'] = p_max / 4
-        node_dict[node]['rc'] = cal_rc(p_max / 4)
+        # node_dict[node]['power'] = p_max / 4
+        # node_dict[node]['rc'] = cal_rc(p_max / 4)
         node_dict[node]['neighbors'] = []
         node_dict[node]['CH_belong'] = None
         node_dict[node]['util'] = None
@@ -323,7 +329,8 @@ while (t < max_t):
             p0 = 1 - pow((c_ch-c_cm)/(payoff-c_cm), 1/(len(node_dict[node]['neighbors'])))
         node_dict[node]['p0'] = p0
         if random.random() < p0:
-            p_ch = p0 * node_dict[node]['e_res'] / e0
+            # p_ch = p0 * node_dict[node]['e_res'] / e0
+            p_ch = p0
             node_dict[node]['p_ch'] = p_ch
             t_ge = p_ch / (1 - p_ch * (t % (1/p_ch)))
             # print(f'Node {i}: {t_ge}')
@@ -334,7 +341,12 @@ while (t < max_t):
             else:
                 node_dict[node]['CH'] = False
             CH_can += 1
-
+    
+    # the network must have at least one CH
+    # otherwise, restart the iteration
+    if CH_true == 0:
+        continue
+    
     # After real CHs are selected, CHs broadcast the advertising message
     # CHs who receive advertising messages will add the node to CH neighboring list.
     # CMs receive all messages from CHs and select the nearest CH to send message.
@@ -355,6 +367,8 @@ while (t < max_t):
 
                 d = math.hypot(ch_node[0] - node[0], ch_node[1] - node[1])
                 if node_dict[ch_node]['rc'] >= d: # node receives advertising message
+                    if node not in cm_first_list:
+                        cm_first_list.append(node)
                     network['edges'][i, j] = 1
                     # If received node is CH
                     if node_dict[node]['CH'] == True:
@@ -414,7 +428,8 @@ while (t < max_t):
 
     # Unconnected nodes will try to join a cluster by sending join request to surrounding node
     extended_cluster = 0
-    while (extended_cluster == 0):
+    connectivity = True
+    while (extended_cluster == 0 and connectivity == True):
         extended_cluster = 1
 
         for i in range(0, num_nodes):
@@ -422,7 +437,12 @@ while (t < max_t):
             unjoined_node = network['vertices'][i]
             if node_dict[unjoined_node]['e_res'] <= 0:
                 continue
-            if node_dict[unjoined_node]['CH_belong'] is not None and node_dict[unjoined_node]['CH'] == False:
+            # if (node_dict[unjoined_node]['CH_belong'] is not None and node_dict[unjoined_node]['CH'] == False):
+            #     continue
+            
+            if node_dict[unjoined_node]['CH'] == True:
+                continue
+            elif node_dict[unjoined_node]['CH_belong'] is not None:
                 continue
 
             if node_dict[unjoined_node]['CH_belong'] is None and node_dict[unjoined_node]['CH'] == False:
@@ -445,6 +465,7 @@ while (t < max_t):
 
                 d = math.hypot(unjoined_node[0] - cm_node[0], unjoined_node[1] - cm_node[1])
                 if node_dict[unjoined_node]['rc'] >= d:
+                    # temporary neighbor list will be updated if it can connected to cm
                     neighbors_temp.append(cm_node)
                     if node_dict[unjoined_node]['CH_belong'] is None:
                         node_dict[unjoined_node]['CH_belong'] = node_dict[cm_node]['CH_belong']
@@ -463,24 +484,25 @@ while (t < max_t):
             
             if final_cm_neighbor is not None:
                 network['edges'][final_cm_neighbor_index, i] = 1
-                add_neighbor(cm_node, unjoined_node)
+                add_neighbor(final_cm_neighbor, unjoined_node)
                 # after removing neighbor not in same cluster, neighbors_temp is new neighbor list of unjoined_node
                 for neighbor in neighbors_temp[:]:
-                    k = network['vertices'].index(neighbor)
                     if node_dict[neighbor]['CH_belong'] != node_dict[unjoined_node]['CH_belong']:
-                        network['edges'][i, k] = 0
                         neighbors_temp.remove(neighbor)
-                    else:
-                        network['edges'][i, k] = 1
-                        # add_neighbor(unjoined_node, neighbor)
-                        
-                node_dict[unjoined_node]['neighbors'] = neighbors_temp
+                        k = network['vertices'].index(neighbor)
+                        network['edges'][i, k] = 0
+                
+                for neighbor in neighbors_temp:
+                    k = network['vertices'].index(neighbor)
+                    network['edges'][i, k] = 1
+                    add_neighbor(unjoined_node, neighbor)
                         
             else:
                 node_dict[unjoined_node]['power'] += p_step
-                if node_dict[unjoined_node]['power'] > 2 * p_max:
-                    node_dict[unjoined_node]['power'] = 2 * p_max
+                if node_dict[unjoined_node]['power'] > 2*p_max:
+                    node_dict[unjoined_node]['power'] = 2*p_max
                     print("Reach p_max", i)
+                    connectivity = False
                 node_dict[unjoined_node]['rc'] = cal_rc(node_dict[unjoined_node]['power'])
 
     for i in range(0, num_nodes):
@@ -499,9 +521,6 @@ while (t < max_t):
 
     modified_network = network
     cm_node_rc = cal_rc(p_max / 4)
-    
-    # if t % 1 == 0:
-    #     directional_wsn_plot(modified_network, node_dict)
     
     # remove connection between CH and CMs (for plotting graph)
     for i in range(0, num_nodes):
@@ -525,9 +544,9 @@ while (t < max_t):
             j = network['vertices'].index(neighbor)
             modified_network['edges'][i, j] = 0
 
-    # cluster_head_probability_plot(modified_network, node_dict)
-    if t % 50 == 0:
-        directional_wsn_plot(modified_network, node_dict)
+    if t % plot_period == 0:
+        cluster_head_probability_plot(modified_network, node_dict)
+        # directional_wsn_plot(modified_network, node_dict)
 
     G = graph.build_graph(modified_network['vertices'], modified_network['edges'])
     layered_batches_per_cluster = graph.divide_network_by_clusters(G, node_dict)
@@ -606,7 +625,8 @@ while (t < max_t):
                             nash_eq = False
                         else:
                             node_dict[cm_node]['neighbors'] = old_neighbors
-
+    
+    print('----------------------------')
     print(f'Iteration {t}: Finished, Candicate CH: {CH_can}, Real CH: {CH_true}')
     for i in range(0, num_nodes):
         ch_node = modified_network['vertices'][i]
@@ -650,13 +670,43 @@ while (t < max_t):
                 #       network['vertices'].index(neighbor), network['vertices'].index(node_dict[neighbor]['CH_belong']))
                 # print(f'Node: {i}, Neighbor: {network['vertices'].index(neighbor)}')
     
+    network = modified_network
+    
+    cm_node_rc = cal_rc(p_max / 4)
+    
+    # remove connection between CH and CMs (for plotting graph)
+    for i in range(0, num_nodes):
+        ch_node = network['vertices'][i]
+        # filter CHs only
+        if node_dict[ch_node]['e_res'] <= 0 or node_dict[ch_node]['CH'] == False:
+            continue
+
+        xn, yn = ch_node
+        for neighbor in node_dict[ch_node]['neighbors']:
+            if node_dict[neighbor]['CH'] == True:
+                continue
+
+            x_neighbor, y_neighbor = neighbor
+            d = math.hypot(xn - x_neighbor, yn - y_neighbor)
+            if cm_node_rc < d:
+                j = network['vertices'].index(neighbor)
+                modified_network['edges'][i, j] = 0
+
+        for neighbor in node_dict[ch_node]['CH_neighbors']:
+            j = network['vertices'].index(neighbor)
+            modified_network['edges'][i, j] = 0
     # maintainance phase
-    if t % 50 == 0:
+    if t % plot_period == 0:
+        tx_power_plot(modified_network, node_dict)
         directional_wsn_plot(modified_network, node_dict)
     
     G = graph.build_graph(modified_network['vertices'], modified_network['edges'])
     layered_batches_per_cluster = graph.divide_network_by_clusters(G, node_dict)
     
+    num_ch = 0
+    num_cm = 0
+    c_ch_tot = 0
+    c_cm_tot = 0
     for ch_node, layers in layered_batches_per_cluster.items():
         if node_dict[ch_node]['e_res'] <= 0:
             pass
@@ -664,6 +714,9 @@ while (t < max_t):
         depth = len(layers)
         node_dict[ch_node]['c_ch'] = cal_cost(node_dict[ch_node], ch_node[0], ch_node[1], "CH", False)
         node_dict[ch_node]['e_res'] -= node_dict[ch_node]['c_ch']
+        num_ch += 1
+        c_ch_tot += node_dict[ch_node]['c_ch']
+        # print(network['vertices'].index(ch_node), 'CH', node_dict[ch_node]['c_ch'])
         if node_dict[ch_node]['e_res'] <= 0:
             dead_nodes += 1
             print('Dead nodes:', dead_nodes)
@@ -678,9 +731,16 @@ while (t < max_t):
                     
                     node_dict[node]['c_cm'] = cal_cost(node_dict[node], node[0], node[1], "CM", False, layer_depth=depth-i)
                     node_dict[node]['e_res'] -= node_dict[node]['c_cm']
+                    num_cm += 1
+                    c_cm_tot += node_dict[ch_node]['c_cm']
+                    # print(network['vertices'].index(node), 'CM', node_dict[node]['c_cm'])
                     if node_dict[node]['e_res'] <= 0:
                         dead_nodes += 1
                         print('Dead nodes:', dead_nodes)
+                        
+    print('Avg cost CH:', c_ch_tot/num_ch)
+    print('Avg cost CM:', c_cm_tot/num_cm)
+    # break
     
     if dead_nodes >= num_nodes:
         break
