@@ -8,6 +8,11 @@ from scipy import integrate
 import csv
 from plot import directional_wsn_plot, cluster_head_probability_plot, tx_power_plot
 import graph
+import copy
+
+########################################################################
+# DEFINITIONS
+########################################################################
 
 num_nodes = 200
 dead_nodes = 0
@@ -16,7 +21,7 @@ area = 250
 xs, ys = (0, 0)
 
 # system parameters
-e0 = 0.01                     # initial energy of the nodes
+e0 = 0.5                     # initial energy of the nodes
 eth = 20                    # threshold energy
 pth = 7*pow(10, -10)         # power threshold
 hop_max = 3                 # number of neighbor hops
@@ -37,7 +42,7 @@ e_agg = 5*pow(10, -9)
 d0 = math.sqrt(e_fs/e_mp)
 m_pkt_s = 20
 m_pkt_l = 500
-payoff = 8 * pow(10, -4)
+payoff = 5 * pow(10, -4)
 
 # game 2 parameter
 ALPHA = 1.5     # e_balance_benefit
@@ -46,6 +51,13 @@ M = 0.01        # e_cost
 
 # plot settings
 plot_period = 50
+
+# test settings
+EDGES_MATCHING_NEIGHBORS_TEST = False
+
+########################################################################
+# FUNCTIONS 
+########################################################################
 
 def cal_rc(power):
     distance = math.sqrt((power*wave*wave)/(pth*16*math.pi*math.pi))
@@ -97,8 +109,8 @@ def cal_cost(node_info, xn, yn, role, clustering, layer_depth=1):
         processing_costs.append(c_process * 10000)
         transmitting_costs.append(c_tx * 10000)
     else:
-        c_rx = len(node_info['neighbors']) * m_pkt_s * e_elec
-        c_agg = len(node_info['neighbors']) * m_pkt_s * e_agg
+        c_rx = m_pkt_l * e_elec
+        c_agg = m_pkt_l * e_agg
         c_total = c_rx + c_agg + c_tx
     return c_total
 
@@ -175,6 +187,7 @@ def get_graph(node, hop):
 
     return vertices, edges
 
+# Check connectivity existed
 def dfs(network, start_vertex, visited):
     i = network['vertices'].index(start_vertex)
     if visited[i] == True:
@@ -195,6 +208,31 @@ def check_connectivity(network, start_node):
 
     return True
 
+# Check potential connectivity with maximum communication radius:
+def check_potential_connectivity():
+    skip_index = []
+    max_rc = cal_rc(p_max)
+    for i in range(0, num_nodes):
+        if i in skip_index:
+            continue
+        
+        node_i = network['vertices'][i]
+        for j in range(0, num_nodes):
+            if i == j or j in skip_index:
+                continue
+            node_j = network['vertices'][j]
+            d = math.hypot(node_i[0] - node_j[0], node_i[1] - node_j[1])
+            if max_rc >= d:
+                if i not in skip_index:
+                    skip_index.append(i)
+                if j not in skip_index:
+                    skip_index.append(j)
+    
+    if len(skip_index) == num_nodes:
+        return True
+    
+    return False
+
 def update_global_network(global_network, local_network):
     length = len(local_network['vertices'])
     for i1 in range(0, length):
@@ -206,8 +244,42 @@ def update_global_network(global_network, local_network):
             j2 = global_network['vertices'].index(local_network['vertices'][j1])
 
             global_network['edges'][i2, j2] = local_network['edges'][i1, j1]
+            
+def check_edges_matching_neighbors(edges, ch_neighbor_flag=True, tag='Check:'):
+    if EDGES_MATCHING_NEIGHBORS_TEST == False:
+        return
+    
+    test_edges = np.zeros((num_nodes, num_nodes), dtype=int)
+    # neighbors list of all nodes 'neighbors' and 'CH_neighbors'
+    for i in range(0, num_nodes):
+        node = network['vertices'][i]
+        for neighbor in node_dict[node]['neighbors']:
+            j = network['vertices'].index(neighbor)
+            test_edges[i, j] = 1
+            
+        if node_dict[node]['CH'] == True and ch_neighbor_flag == True:
+            for ch_neighbors in node_dict[node]['CH_neighbors']:
+                j = network['vertices'].index(ch_neighbors)
+                test_edges[i, j] = 1
+            
+    print(tag, end=' ')
+    if (np.array_equal(test_edges, edges)) == False:
+        differ = np.where(test_edges != edges)
+        print(differ)
+        for index in range(0, len(differ[0])):
+            node1 = network['vertices'][differ[0][index]]
+            node2 = network['vertices'][differ[1][index]]
+            print(node_dict[node1]['CH'], node_dict[node2]['CH'])
+        
+    else:
+        print('Edges matching neighbors')
+
+########################################################################
+# MAIN SCRIPTS
+########################################################################
 
 t = 0
+t_no_dead = None
 max_t = 50000
 
 node_dict = {}
@@ -263,7 +335,9 @@ for i in range(0, len(sample)):
     }
 
 print("Generated done")
+print("Possible connectivity:", check_potential_connectivity())
 
+# Main loop
 while (t < max_t):
     CH_con = 0
     CH_can = 0
@@ -299,10 +373,12 @@ while (t < max_t):
             if node_dict[node1]['rc'] >= d:
                 network['edges'][i, j] = 1
                 add_neighbor(node1, node2)
-                
+    
+    check_edges_matching_neighbors(network['edges'], True, 'After broadcast:')
 
     for i in range(0, num_nodes):
         node = network['vertices'][i]
+        # after get neighbor node list, unconnected node will be skipped
         if node_dict[node]['e_res'] <= 0 or len(node_dict[node]['neighbors']) == 0:
             continue
 
@@ -369,15 +445,17 @@ while (t < max_t):
                 if node_dict[ch_node]['rc'] >= d: # node receives advertising message
                     if node not in cm_first_list:
                         cm_first_list.append(node)
-                    network['edges'][i, j] = 1
                     # If received node is CH
                     if node_dict[node]['CH'] == True:
                         if node not in node_dict[ch_node]['CH_neighbors']:
                             node_dict[ch_node]['CH_neighbors'].append(node)
+                            network['edges'][i, j] = 1          # linking betweens CHs
                     # If received node is CM, update the CH belong if new CH is closer to node.
                     else:
                         if node_dict[node]['CH_belong'] is None:
                             node_dict[node]['CH_belong'] = ch_node
+                            network['edges'][i, j] = 1
+                            add_neighbor(ch_node, node)
                         else:
                             xn, yn = node
                             x_ch_old, y_ch_old = node_dict[node]['CH_belong']
@@ -385,7 +463,17 @@ while (t < max_t):
                             d1 = math.hypot(xn - x_ch_old, yn - y_ch_old)
                             d2 = math.hypot(xn - x_ch_temp, yn - y_ch_temp)
                             if d1 > d2:
+                                # remove neighbor from 'neighbors' CH
+                                k = network['vertices'].index(node_dict[node]['CH_belong'])
+                                delete_neighbor(node_dict[node]['CH_belong'], node)
+                                network['edges'][k, j] = 0
+                                
+                                # update new CH_belong
                                 node_dict[node]['CH_belong'] = ch_node
+                                add_neighbor(ch_node, node)
+                                network['edges'][i, j] = 1
+    
+    check_edges_matching_neighbors(network['edges'], True, 'After CHs inviting node to join cluster:')
     
     # Update neighbor list of nodes
     for i in range(0, num_nodes):
@@ -393,8 +481,21 @@ while (t < max_t):
         if node_dict[node]['e_res'] <= 0:
             continue
 
+        # Node is CH
+        if node_dict[node]['CH'] == True:
+            for neighbor in node_dict[node]['neighbors'][:]:
+                j = network['vertices'].index(neighbor)
+                # Neighbor is CH
+                if node_dict[neighbor]['CH'] == True:
+                    # network['edges'][i, j] = 0
+                    delete_neighbor(node, neighbor)
+                # Neighbor is CM or unconnected node
+                else:   
+                    if node_dict[neighbor]['CH_belong'] != node:
+                        network['edges'][i, j] = 0
+                        delete_neighbor(node, neighbor)
         # Node is CM
-        if node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
+        elif node_dict[node]['CH'] == False and node_dict[node]['CH_belong'] is not None:
             for neighbor in node_dict[node]['neighbors'][:]:
                 # Neighbor is CH
                 j = network['vertices'].index(neighbor)
@@ -407,24 +508,14 @@ while (t < max_t):
                     if node_dict[neighbor]['CH_belong'] != node_dict[node]['CH_belong']:
                         network['edges'][i, j] = 0
                         delete_neighbor(node, neighbor)
-        # Node is CH
-        elif node_dict[node]['CH'] == True:
-            for neighbor in node_dict[node]['neighbors'][:]:
-                j = network['vertices'].index(neighbor)
-                # Neighbor is CH
-                if node_dict[node]['CH'] == True:
-                    network['edges'][i, j] = 0
-                    delete_neighbor(node, neighbor)
-                # Neighbor is CM or unconnected node
-                else:   
-                    if node_dict[neighbor]['CH_belong'] != node:
-                        network['edges'][i, j] = 0
-                        delete_neighbor(node, neighbor)
+
         else:
             for neighbor in node_dict[node]['neighbors'][:]:
                 j = network['vertices'].index(neighbor)
                 network['edges'][i, j] = 0
                 delete_neighbor(node, neighbor)
+                
+    check_edges_matching_neighbors(network['edges'], True, 'After removing neighbors not in same clusters:')
 
     # Unconnected nodes will try to join a cluster by sending join request to surrounding node
     extended_cluster = 0
@@ -499,12 +590,12 @@ while (t < max_t):
                         
             else:
                 node_dict[unjoined_node]['power'] += p_step
-                if node_dict[unjoined_node]['power'] > 2*p_max:
-                    node_dict[unjoined_node]['power'] = 2*p_max
+                if node_dict[unjoined_node]['power'] > p_max:
+                    node_dict[unjoined_node]['power'] = p_max
                     print("Reach p_max", i)
                     connectivity = False
                 node_dict[unjoined_node]['rc'] = cal_rc(node_dict[unjoined_node]['power'])
-
+    
     for i in range(0, num_nodes):
         node = network['vertices'][i]
         
@@ -515,16 +606,16 @@ while (t < max_t):
                 j = network['vertices'].index(neighbor)
                 network['edges'][i, j] = 0
                 delete_neighbor(node, neighbor)
-                # print(i, network['vertices'].index(node_dict[node]['CH_belong']),
-                #       network['vertices'].index(neighbor), network['vertices'].index(node_dict[neighbor]['CH_belong']))
-                # print(f'Node: {i}, Neighbor: {network['vertices'].index(neighbor)}')
+                
+    check_edges_matching_neighbors(network['edges'], True, 'After unconnected nodes joined cluster:')
 
-    modified_network = network
+    # copy literally everything from `network` to `modified_network`
+    modified_network = copy.deepcopy(network)
     cm_node_rc = cal_rc(p_max / 4)
     
     # remove connection between CH and CMs (for plotting graph)
     for i in range(0, num_nodes):
-        ch_node = network['vertices'][i]
+        ch_node = modified_network['vertices'][i]
         # filter CHs only
         if node_dict[ch_node]['e_res'] <= 0 or node_dict[ch_node]['CH'] == False:
             continue
@@ -537,16 +628,16 @@ while (t < max_t):
             x_neighbor, y_neighbor = neighbor
             d = math.hypot(xn - x_neighbor, yn - y_neighbor)
             if cm_node_rc < d:
-                j = network['vertices'].index(neighbor)
+                j = modified_network['vertices'].index(neighbor)
                 modified_network['edges'][i, j] = 0
 
         for neighbor in node_dict[ch_node]['CH_neighbors']:
-            j = network['vertices'].index(neighbor)
+            j = modified_network['vertices'].index(neighbor)
             modified_network['edges'][i, j] = 0
 
     if t % plot_period == 0:
         cluster_head_probability_plot(modified_network, node_dict)
-        # directional_wsn_plot(modified_network, node_dict)
+        directional_wsn_plot(network, node_dict)
 
     G = graph.build_graph(modified_network['vertices'], modified_network['edges'])
     layered_batches_per_cluster = graph.divide_network_by_clusters(G, node_dict)
@@ -569,7 +660,7 @@ while (t < max_t):
                         if node_dict[cm_node]['local_net'] is None:
                             local_net = {'vertices': [], 'edges': []}
                             local_net['vertices'], local_net['edges'] = get_graph(cm_node, hop_max)
-                            node_dict[cm_node]['local_net'] = local_net
+                            node_dict[cm_node]['local_net'] = copy.deepcopy(local_net)
 
                         e_res = node_dict[cm_node]['e_res']
                         if node_dict[cm_node]['util'] is None:
@@ -581,13 +672,8 @@ while (t < max_t):
                         new_rc = cal_rc(new_power)
                         new_util = None
                         topology_changed = False
-                        old_neighbors = node_dict[cm_node]['neighbors']
-                        new_local_net = node_dict[cm_node]['local_net']
-
-                        # print("CH: ", ch_node)
-                        # print("CM: ", cm_node)
-                        # print(new_local_net)
-                        # print(new_power)
+                        old_neighbors = copy.deepcopy(node_dict[cm_node]['neighbors'])
+                        new_local_net = copy.deepcopy(node_dict[cm_node]['local_net'])
 
                         # check connection between around each CM
                         for neighbor in node_dict[cm_node]['neighbors'][:]:
@@ -596,10 +682,6 @@ while (t < max_t):
                             d = math.hypot(cm_node[0] - neighbor[0], cm_node[1] - neighbor[1])
                             if new_rc < d:     
                                 topology_changed = True
-                                # if cm_node not in new_local_net['vertices'] or neighbor not in new_local_net['vertices']:
-                                #     print("Neighbor", neighbor)
-                                #     print("CH_belong: ", node_dict[cm_node]['CH_belong'])
-                                #     directional_wsn_plot(modified_network, node_dict)
                                 j = new_local_net['vertices'].index(cm_node)
                                 k = new_local_net['vertices'].index(neighbor)
                                 new_local_net['edges'][j, k] = 0
@@ -620,16 +702,62 @@ while (t < max_t):
                             node_dict[cm_node]['power'] = new_power
                             node_dict[cm_node]['rc'] = new_rc
                             if topology_changed is True:
-                                node_dict[cm_node]['local_net'] = new_local_net
-                                update_global_network(modified_network, new_local_net)
+                                node_dict[cm_node]['local_net'] = copy.deepcopy(new_local_net)
+                                update_global_network(network, new_local_net)
                             nash_eq = False
                         else:
                             node_dict[cm_node]['neighbors'] = old_neighbors
     
-    print('----------------------------')
+    check_edges_matching_neighbors(network['edges'], True, 'After topology control phase:')
+    
+    # print('----------------------------')
     print(f'Iteration {t}: Finished, Candicate CH: {CH_can}, Real CH: {CH_true}')
+    # for i in range(0, num_nodes):
+    #     ch_node = modified_network['vertices'][i]
+    #     if node_dict[ch_node]['e_res'] <= 0 or node_dict[ch_node]['CH'] == False:
+    #         continue
+
+    #     xn, yn = ch_node
+    #     for neighbor in node_dict[ch_node]['neighbors']:
+    #         if node_dict[neighbor]['CH'] == True:
+    #             continue
+
+    #         x_neighbor, y_neighbor = neighbor
+    #         d = math.hypot(xn - x_neighbor, yn - y_neighbor)
+    #         if cm_node_rc < d:
+    #             j = modified_network['vertices'].index(neighbor)
+    #             modified_network['edges'][i, j] = 0
+
+    #     for neighbor in node_dict[ch_node]['CH_neighbors']:
+    #         j = modified_network['vertices'].index(neighbor)
+    #         modified_network['edges'][i, j] = 0
+        
+    # for i in range(0, num_nodes):
+    #     node = network['vertices'][i]
+        
+    #     # fix temporary
+    #     if i == 199 and node_dict[node]['CH'] == False:
+    #         for j in range(0, num_nodes):
+    #             ch_node = network['vertices'][j]
+    #             if node_dict[ch_node]['CH'] == True:
+    #                 modified_network['edges'][i, j] = 0
+    #                 delete_neighbor(node, ch_node)
+        
+    #     for neighbor in node_dict[node]['neighbors']:
+    #         if (node_dict[node]['CH_belong'] != node_dict[neighbor]['CH_belong']
+    #             and node_dict[node]['CH_belong'] is not None
+    #             and node_dict[neighbor]['CH_belong'] is not None):
+    #             j = modified_network['vertices'].index(neighbor)
+    #             modified_network['edges'][i, j] = 0
+    #             delete_neighbor(node, neighbor)
+    
+    modified_network = copy.deepcopy(network)
+    cm_node_rc = cal_rc(p_max / 4)
+    
+    # remove connection between CH and CMs (for plotting graph)
     for i in range(0, num_nodes):
         ch_node = modified_network['vertices'][i]
+        # filter CHs only
         if node_dict[ch_node]['e_res'] <= 0 or node_dict[ch_node]['CH'] == False:
             continue
 
@@ -647,58 +775,11 @@ while (t < max_t):
         for neighbor in node_dict[ch_node]['CH_neighbors']:
             j = modified_network['vertices'].index(neighbor)
             modified_network['edges'][i, j] = 0
-        
-    for i in range(0, num_nodes):
-        node = network['vertices'][i]
-        
-        # fix temporary
-        if i == 199 and node_dict[node]['CH'] == False:
-            for j in range(0, num_nodes):
-                ch_node = network['vertices'][j]
-                if node_dict[ch_node]['CH'] == True:
-                    modified_network['edges'][i, j] = 0
-                    delete_neighbor(node, ch_node)
-        
-        for neighbor in node_dict[node]['neighbors']:
-            if (node_dict[node]['CH_belong'] != node_dict[neighbor]['CH_belong']
-                and node_dict[node]['CH_belong'] is not None
-                and node_dict[neighbor]['CH_belong'] is not None):
-                j = modified_network['vertices'].index(neighbor)
-                modified_network['edges'][i, j] = 0
-                delete_neighbor(node, neighbor)
-                # print(i, network['vertices'].index(node_dict[node]['CH_belong']),
-                #       network['vertices'].index(neighbor), network['vertices'].index(node_dict[neighbor]['CH_belong']))
-                # print(f'Node: {i}, Neighbor: {network['vertices'].index(neighbor)}')
-    
-    network = modified_network
-    
-    cm_node_rc = cal_rc(p_max / 4)
-    
-    # remove connection between CH and CMs (for plotting graph)
-    for i in range(0, num_nodes):
-        ch_node = network['vertices'][i]
-        # filter CHs only
-        if node_dict[ch_node]['e_res'] <= 0 or node_dict[ch_node]['CH'] == False:
-            continue
-
-        xn, yn = ch_node
-        for neighbor in node_dict[ch_node]['neighbors']:
-            if node_dict[neighbor]['CH'] == True:
-                continue
-
-            x_neighbor, y_neighbor = neighbor
-            d = math.hypot(xn - x_neighbor, yn - y_neighbor)
-            if cm_node_rc < d:
-                j = network['vertices'].index(neighbor)
-                modified_network['edges'][i, j] = 0
-
-        for neighbor in node_dict[ch_node]['CH_neighbors']:
-            j = network['vertices'].index(neighbor)
-            modified_network['edges'][i, j] = 0
+            
     # maintainance phase
     if t % plot_period == 0:
         tx_power_plot(modified_network, node_dict)
-        directional_wsn_plot(modified_network, node_dict)
+        directional_wsn_plot(network, node_dict)
     
     G = graph.build_graph(modified_network['vertices'], modified_network['edges'])
     layered_batches_per_cluster = graph.divide_network_by_clusters(G, node_dict)
@@ -719,6 +800,8 @@ while (t < max_t):
         # print(network['vertices'].index(ch_node), 'CH', node_dict[ch_node]['c_ch'])
         if node_dict[ch_node]['e_res'] <= 0:
             dead_nodes += 1
+            if t_no_dead is None:
+                t_no_dead = t
             print('Dead nodes:', dead_nodes)
         
         for i, layer in list(enumerate(layers)):       
@@ -736,15 +819,17 @@ while (t < max_t):
                     # print(network['vertices'].index(node), 'CM', node_dict[node]['c_cm'])
                     if node_dict[node]['e_res'] <= 0:
                         dead_nodes += 1
+                        if t_no_dead is None:
+                            t_no_dead = t
                         print('Dead nodes:', dead_nodes)
                         
-    print('Avg cost CH:', c_ch_tot/num_ch)
-    print('Avg cost CM:', c_cm_tot/num_cm)
-    # break
+    # print('Avg cost CH:', c_ch_tot/num_ch)
+    # print('Avg cost CM:', c_cm_tot/num_cm)
     
     if dead_nodes >= num_nodes:
         break
     
     t += 1
 
-print(f'Iterations without dead node: {t}')
+print(f'Iterations without dead node: {t_no_dead}')
+print(f'Iterations without alive node: {t}')
