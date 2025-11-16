@@ -41,8 +41,8 @@ e_elec = 50*pow(10, -9)
 e_agg = 5*pow(10, -9)
 d0 = math.sqrt(e_fs/e_mp)
 m_pkt_s = 20
-m_pkt_l = 500
-payoff = 5 * pow(10, -4)
+m_pkt_l = 1000
+payoff = 1 * pow(10, -3)
 
 # game 2 parameter
 ALPHA = 1.5     # e_balance_benefit
@@ -712,44 +712,6 @@ while (t < max_t):
     
     # print('----------------------------')
     print(f'Iteration {t}: Finished, Candicate CH: {CH_can}, Real CH: {CH_true}')
-    # for i in range(0, num_nodes):
-    #     ch_node = modified_network['vertices'][i]
-    #     if node_dict[ch_node]['e_res'] <= 0 or node_dict[ch_node]['CH'] == False:
-    #         continue
-
-    #     xn, yn = ch_node
-    #     for neighbor in node_dict[ch_node]['neighbors']:
-    #         if node_dict[neighbor]['CH'] == True:
-    #             continue
-
-    #         x_neighbor, y_neighbor = neighbor
-    #         d = math.hypot(xn - x_neighbor, yn - y_neighbor)
-    #         if cm_node_rc < d:
-    #             j = modified_network['vertices'].index(neighbor)
-    #             modified_network['edges'][i, j] = 0
-
-    #     for neighbor in node_dict[ch_node]['CH_neighbors']:
-    #         j = modified_network['vertices'].index(neighbor)
-    #         modified_network['edges'][i, j] = 0
-        
-    # for i in range(0, num_nodes):
-    #     node = network['vertices'][i]
-        
-    #     # fix temporary
-    #     if i == 199 and node_dict[node]['CH'] == False:
-    #         for j in range(0, num_nodes):
-    #             ch_node = network['vertices'][j]
-    #             if node_dict[ch_node]['CH'] == True:
-    #                 modified_network['edges'][i, j] = 0
-    #                 delete_neighbor(node, ch_node)
-        
-    #     for neighbor in node_dict[node]['neighbors']:
-    #         if (node_dict[node]['CH_belong'] != node_dict[neighbor]['CH_belong']
-    #             and node_dict[node]['CH_belong'] is not None
-    #             and node_dict[neighbor]['CH_belong'] is not None):
-    #             j = modified_network['vertices'].index(neighbor)
-    #             modified_network['edges'][i, j] = 0
-    #             delete_neighbor(node, neighbor)
     
     modified_network = copy.deepcopy(network)
     cm_node_rc = cal_rc(p_max / 4)
