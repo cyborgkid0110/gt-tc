@@ -1,0 +1,21 @@
+# FL-LEACH-PSO Algorithm Configuration
+# Fuzzy Logic LEACH Technique-Based Particle Swarm Optimization
+# Reference: Gamal et al., 2022.
+
+# PSO parameters
+pso_particles: 30
+pso_max_iter: 100
+pso_w: 0.7           # inertia weight
+pso_c1: 1.5          # cognitive acceleration coefficient
+pso_c2: 1.5          # social acceleration coefficient
+
+# K-Means
+kmeans_max_iter: 100
+
+# Gap statistic
+gap_k_max: 20         # max clusters to test
+gap_n_ref: 10         # number of reference datasets
+
+# Simulation
+max_rounds: 50000
+plot_period: 1000

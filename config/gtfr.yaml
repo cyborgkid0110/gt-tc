@@ -1,0 +1,48 @@
+# GTFR Algorithm Configuration
+# Game Theory-Based Fuzzy Routing Protocol
+# Reference: Gangwar et al., IEEE Sensors Journal, Vol. 24, No. 6, March 2024.
+
+# ── FCM Clustering (Phase 1) ─────────────────────────────────────────
+fcm_cluster_fraction: 0.05    # c = 5% of node count (10 clusters for 200 nodes)
+fcm_fuzziness: 2              # m: fuzzy partition matrix exponent (standard value)
+fcm_beta: 1.0e-6              # convergence threshold for OF_m change between iterations
+fcm_max_iter: 100             # maximum FCM iterations
+
+# ── Penalty Coefficient psi (Phase 2a, Eq. 7) ────────────────────────
+# Weights for the four normalised penalty terms (must sum to 1.0)
+psi_alpha: 0.25               # IACD (intracluster avg communication distance) weight
+psi_beta:  0.25               # node degree (ND) weight
+psi_gamma: 0.25               # residual energy weight
+psi_delta: 0.25               # node history (NH) weight
+
+# ── Fitness Function Lookup Tables (Phase 2b, Eq. 15) ────────────────
+# R: reward based on RER (remaining energy ratio, %)
+# Higher RER (more energy remaining) → higher reward → more likely to be elected CH
+reward_table:
+  - { rer_min:  0, rer_max:  20, R: 0.2 }
+  - { rer_min: 20, rer_max:  40, R: 0.4 }
+  - { rer_min: 40, rer_max:  60, R: 0.6 }
+  - { rer_min: 60, rer_max:  80, R: 0.8 }
+  - { rer_min: 80, rer_max: 101, R: 1.0 }
+
+# P(NH_p): penalty based on node history probability (fraction of rounds as CH)
+# Higher NH → higher penalty → reduces fitness of over-used nodes
+penalty_nh_table:
+  - { nh_min: 0.0, nh_max: 0.2, P: 0.05 }
+  - { nh_min: 0.2, nh_max: 0.4, P: 0.10 }
+  - { nh_min: 0.4, nh_max: 0.6, P: 0.20 }
+  - { nh_min: 0.6, nh_max: 0.8, P: 0.35 }
+  - { nh_min: 0.8, nh_max: 1.1, P: 0.50 }
+
+# P_IACD: penalty based on normalised IACD (how far from cluster centre)
+# Higher IACD_norm → higher penalty → nodes closer to centre preferred as CH
+penalty_iacd_table:
+  - { iacd_min: 0.0, iacd_max: 0.2, P: 0.05 }
+  - { iacd_min: 0.2, iacd_max: 0.4, P: 0.10 }
+  - { iacd_min: 0.4, iacd_max: 0.6, P: 0.20 }
+  - { iacd_min: 0.6, iacd_max: 0.8, P: 0.35 }
+  - { iacd_min: 0.8, iacd_max: 1.1, P: 0.50 }
+
+# ── Simulation ───────────────────────────────────────────────────────
+max_rounds: 50000
+plot_period: 1000

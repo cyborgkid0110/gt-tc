@@ -1,0 +1,18 @@
+# DIA-MIA Algorithm Configuration
+# Topology Control Game: Ordinal Potential Game
+# Reference: Komali, MacKenzie & Gilles (2008)
+
+# ── Algorithm Mode ───────────────────────────────────────────────────
+mode: 'DIA'           # 'DIA' (delta-improvement, fair, O(n^2)) or
+                      # 'MIA' (max-improvement, fast O(n), first-mover bias)
+
+# ── DIA k-hop localisation (LDIA, Section 5.5.2) ────────────────────
+# Set dia_k to a positive integer to run LDIA: utility counts only nodes
+# reachable within k hops instead of the full network (Eq. 16).
+# Reduces message overhead to O(1) per node.
+# Set to null (or omit) for standard DIA with global reachability.
+dia_k: null           # e.g. 3 for LDIA with k=3; null for global DIA
+
+# ── Simulation ───────────────────────────────────────────────────────
+max_rounds: 50000
+plot_period: 1000
