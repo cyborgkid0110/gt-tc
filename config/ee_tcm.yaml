@@ -1,0 +1,21 @@
+# EE-TCM: Energy-Efficiency Topology Control Model
+# Reference: Elavarasan & Rajaram, Sustainable Computing 44 (2024) 101015.
+
+# ── Clustering (§3.4) ─────────────────────────────────────────────────
+p_ch_fraction: 0.05       # target CH density among β_opt-eligible nodes.
+                          # Paper is silent on CH count; this calibration
+                          # keeps CH density comparable to LEACH / FC-CRA
+                          # for fair benchmarking.
+
+# ── Topology control game (§3.5) ──────────────────────────────────────
+k_connectivity: 1         # 1 = strong connectivity (default); 2 = biconnected
+max_adapt_iter: 300000    # cap on inner-loop passes (EFTCG precedent)
+
+# ── Data compression (§3.4 Steady Phase, Eq. E_saving) ────────────────
+compression_a: 1          # 1 = disabled (default, fair benchmarking).
+                          # Values > 1 reduce CM maintenance cost by 1/a.
+compression_overhead: 0   # flat E_compress per CM per round (J); 0 = none.
+
+# ── Simulation ────────────────────────────────────────────────────────
+max_rounds: 50000
+plot_period: 1000

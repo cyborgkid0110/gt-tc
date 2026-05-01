@@ -176,3 +176,7 @@ After CH selection, BS broadcasts cluster assignments including PCH and SCH IDs.
 Simulations were conducted in MATLAB across two scenarios (100 nodes / 100×100 m², and 1000 nodes / 100×100 m²). The proposed protocol was benchmarked against FCM+FLS (Rajput and Kum), LEACH-FC, and ECE-LEACH (Chen et al.).
 
 In Scenario 1, the last node died beyond 10,000 rounds (vs. 6,851 / 2,481 / 1,764 for competitors), yielding a network lifetime improvement exceeding **46%**. Total bits transferred reached $196 \times 10^6$ at 92% lifespan — a **17.6% throughput improvement** over the next-best protocol. In Scenario 2 (1000 nodes), the proposed protocol sustained 970 surviving nodes past 10,000 rounds and transferred $1 \times 10^9$ bits at 97% lifespan, outperforming all baselines in both lifetime and throughput metrics.
+
+### 10. Algorithm pipeline
+
+![alt text](fl_leach_pso.png)

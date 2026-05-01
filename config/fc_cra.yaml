@@ -1,0 +1,13 @@
+# FC-CRA: Clustering and Routing Algorithm for Fast Changes of Large-Scale WSN
+# Reference: Fan & Xin, IEEE Internet of Things Journal, 11(3), 5036-5049 (2024).
+
+# ── Clustering ────────────────────────────────────────────────────────
+P: 0.05                 # desired CH fraction (datum, used in R_0 and alpha_i)
+d_max_factor: 0.5       # d_max = d_max_factor * calc_comm_range(p_max)
+                        # Friis substitute for paper's 1.2·d_0 near-BS threshold
+z_realloc_pct: 0.5      # rebuild clusters when any CH.e_res / e_ref ≤ z_realloc_pct
+chcc_avg_mode: mean     # 'mean' | 'median' — aggregation for ∂_th threshold
+
+# ── Simulation ────────────────────────────────────────────────────────
+max_rounds: 50000
+plot_period: 1000
