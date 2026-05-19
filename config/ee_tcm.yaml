@@ -15,7 +15,3 @@ max_adapt_iter: 300000    # cap on inner-loop passes (EFTCG precedent)
 compression_a: 1          # 1 = disabled (default, fair benchmarking).
                           # Values > 1 reduce CM maintenance cost by 1/a.
 compression_overhead: 0   # flat E_compress per CM per round (J); 0 = none.
-
-# ── Simulation ────────────────────────────────────────────────────────
-max_rounds: 50000
-plot_period: 1000

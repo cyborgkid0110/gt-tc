@@ -35,8 +35,8 @@ from plot import directional_wsn_plot
 class FLLEACHPSO(BaseAlgorithm):
     """FL-LEACH-PSO clustering protocol."""
 
-    def __init__(self, net: NetworkModel, config_path: str = 'config/fl_leach_pso.yaml'):
-        super().__init__(net, config_path)
+    def __init__(self, net: NetworkModel, config_path: str = 'config/fl_leach_pso.yaml', **kwargs):
+        super().__init__(net, config_path, **kwargs)
 
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
@@ -550,14 +550,15 @@ class FLLEACHPSO(BaseAlgorithm):
                 s.power = net.p_max / 4
                 s.rc = net.calc_comm_range(s.power)
 
-        print(f'FL-LEACH-PSO Round {self.t} start. '
-              f'Dead: {self.dead_nodes}/{net.num_nodes}')
-
         # PCH selection (fuzzy logic)
         self._select_pch()
 
         # SCH selection (fuzzy logic, requires PCH)
         self._select_sch()
+
+        print(f'FL-LEACH-PSO Round {self.t}: '
+              f'PCHs={len(self._pchs)}, SCHs={len(self._schs)}, '
+              f'Dead={self.dead_nodes}/{net.num_nodes}')
 
         # Build cluster edges
         self._build_cluster_edges()

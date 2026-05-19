@@ -18,8 +18,8 @@ from plot import directional_wsn_plot
 class LEACH(BaseAlgorithm):
     """LEACH clustering protocol."""
 
-    def __init__(self, net: NetworkModel, config_path: str = 'config/leach.yaml'):
-        super().__init__(net, config_path)
+    def __init__(self, net: NetworkModel, config_path: str = 'config/leach.yaml', **kwargs):
+        super().__init__(net, config_path, **kwargs)
 
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
@@ -38,8 +38,6 @@ class LEACH(BaseAlgorithm):
         net = self.net
         net.reset_round()
 
-        print(f'LEACH Round {self.t} start. Dead nodes: {self.dead_nodes}/{net.num_nodes}')
-
         # LEACH manages rotation via _ch_history, so clear is_ch each round
         # and reset non-CH power to p_max/4
         for s in net.sensors:
@@ -51,6 +49,9 @@ class LEACH(BaseAlgorithm):
 
         # Phase 1: CH election
         num_ch = self._ch_election()
+
+        print(f'LEACH Round {self.t}: CHs={num_ch}, '
+              f'Dead={self.dead_nodes}/{net.num_nodes}')
 
         if num_ch != 0:
             # Phase 2: neighbour discovery + cluster formation

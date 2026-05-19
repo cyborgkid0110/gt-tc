@@ -42,7 +42,3 @@ penalty_iacd_table:
   - { iacd_min: 0.4, iacd_max: 0.6, P: 0.20 }
   - { iacd_min: 0.6, iacd_max: 0.8, P: 0.35 }
   - { iacd_min: 0.8, iacd_max: 1.1, P: 0.50 }
-
-# ── Simulation ───────────────────────────────────────────────────────
-max_rounds: 50000
-plot_period: 1000

@@ -50,8 +50,8 @@ import graph
 class FCCRA(BaseAlgorithm):
     """FC-CRA clustering + multi-hop routing algorithm."""
 
-    def __init__(self, net: NetworkModel, config_path: str = 'config/fc_cra.yaml'):
-        super().__init__(net, config_path)
+    def __init__(self, net: NetworkModel, config_path: str = 'config/fc_cra.yaml', **kwargs):
+        super().__init__(net, config_path, **kwargs)
 
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
@@ -80,9 +80,6 @@ class FCCRA(BaseAlgorithm):
         net = self.net
         net.reset_round()
 
-        print(f'FC-CRA Round {self.t} start. '
-              f'Dead: {self.dead_nodes}/{net.num_nodes}')
-
         for s in net.sensors:
             s.is_ch = False
             s.ch_neighbors = []
@@ -103,6 +100,10 @@ class FCCRA(BaseAlgorithm):
 
         # ---- Phase 2: materialise cluster structure -----------------
         self._apply_clusters_to_net()
+
+        num_ch = sum(1 for s in net.sensors if s.is_ch)
+        print(f'FC-CRA Round {self.t}: CHs={num_ch}, '
+              f'Dead={self.dead_nodes}/{net.num_nodes}')
         self._filter_neighbours()
         self._connect_unaffiliated()
         self._cleanup_cross_cluster_edges()

@@ -23,8 +23,8 @@ from plot import directional_wsn_plot
 class GTFR(BaseAlgorithm):
     """Game Theory-Based Fuzzy Routing protocol."""
 
-    def __init__(self, net: NetworkModel, config_path: str = 'config/gtfr.yaml'):
-        super().__init__(net, config_path)
+    def __init__(self, net: NetworkModel, config_path: str = 'config/gtfr.yaml', **kwargs):
+        super().__init__(net, config_path, **kwargs)
 
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
@@ -77,8 +77,6 @@ class GTFR(BaseAlgorithm):
                 s.power = net.p_max / 4
                 s.rc = net.calc_comm_range(s.power)
 
-        print(f'GTFR Round {self.t} start. Dead: {self.dead_nodes}/{net.num_nodes}')
-
         # ---- Phase 1: neighbour discovery (needed for ND in psi) ----
         net.discover_neighbors()
 
@@ -87,6 +85,9 @@ class GTFR(BaseAlgorithm):
 
         # ---- Phase 2b: Final CH selection ---------------------------
         final_chs = self._select_final_chs(tchs)
+
+        print(f'GTFR Round {self.t}: CHs={len(final_chs)}, '
+              f'Dead={self.dead_nodes}/{net.num_nodes}')
 
         if len(final_chs) > 0:
             # ---- Phase 3a: cluster formation ------------------------
@@ -481,8 +482,8 @@ class GTFR(BaseAlgorithm):
                 if s.e_res <= 0:
                     self._track_death(s)
 
-            elif s.ch_belong is not None:
-                s.c_cm = net.calc_node_cost(s, 'CM', clustering=False)
+            else:
+                s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
                 s.e_res -= s.c_cm
 
                 if s.e_res <= 0:

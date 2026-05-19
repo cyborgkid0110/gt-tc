@@ -20,7 +20,7 @@ from algos.ee_tcm import EETCM
 
 NUM_NODES = 200
 AREA = 250
-E0 = 0.5                        # initial energy (J)
+E0 = 0.005                        # initial energy (J)
 P_MIN = 0.01
 P_MAX = 0.08
 P_STEP = 0.0001
@@ -33,6 +33,10 @@ E_ELEC = 50e-9
 E_AGG = 5e-9
 M_PKT_S = 20
 M_PKT_L = 1000
+
+# simulation
+MAX_ROUNDS = 50000
+PLOT_PERIOD = 1
 
 ########################################################################
 # NODE GENERATION (Poisson Disk Sampling)
@@ -70,33 +74,35 @@ print("Possible connectivity:", net.check_potential_connectivity())
 # RUN ALGORITHM
 ########################################################################
 
-ALGORITHM = 'TCLE'  # 'GT2', 'LEACH', 'GTFR', 'DIA', 'MIA', 'TCLE', 'EFTCG-1', 'EFTCG-2', 'FL-LEACH-PSO', 'SCA-LEVY', 'FC-CRA', 'EE-TCM'
+ALGORITHM = 'EFTCG-2'  # 'GT2', 'LEACH', 'GTFR', 'DIA', 'MIA', 'TCLE', 'EFTCG-1', 'EFTCG-2', 'FL-LEACH-PSO', 'SCA-LEVY', 'FC-CRA', 'EE-TCM'
+
+sim_kwargs = dict(max_rounds=MAX_ROUNDS, plot_period=PLOT_PERIOD)
 
 if ALGORITHM == 'GT2':
-    algo = GT2(net, config_path='config/gt2.yaml')
+    algo = GT2(net, config_path='config/gt2.yaml', **sim_kwargs)
 elif ALGORITHM == 'LEACH':
-    algo = LEACH(net, config_path='config/leach.yaml')
+    algo = LEACH(net, config_path='config/leach.yaml', **sim_kwargs)
 elif ALGORITHM == 'GTFR':
-    algo = GTFR(net, config_path='config/gtfr.yaml')
+    algo = GTFR(net, config_path='config/gtfr.yaml', **sim_kwargs)
 elif ALGORITHM == 'DIA':
-    algo = DIAMIA(net, config_path='config/dia_mia.yaml')
+    algo = DIAMIA(net, config_path='config/dia_mia.yaml', **sim_kwargs)
 elif ALGORITHM == 'MIA':
-    algo = DIAMIA(net, config_path='config/dia_mia.yaml')
+    algo = DIAMIA(net, config_path='config/dia_mia.yaml', **sim_kwargs)
     algo.mode = 'MIA'
 elif ALGORITHM == 'TCLE':
-    algo = TCLE(net, config_path='config/tcle.yaml')
+    algo = TCLE(net, config_path='config/tcle.yaml', **sim_kwargs)
 elif ALGORITHM == 'EFTCG-1':
-    algo = EFTCG(net, config_path='config/eftcg.yaml')
+    algo = EFTCG(net, config_path='config/eftcg.yaml', **sim_kwargs)
 elif ALGORITHM == 'EFTCG-2':
-    algo = EFTCG(net, config_path='config/eftcg.yaml')
+    algo = EFTCG(net, config_path='config/eftcg.yaml', **sim_kwargs)
     algo.k = 2
 elif ALGORITHM == 'FL-LEACH-PSO':
-    algo = FLLEACHPSO(net, config_path='config/fl_leach_pso.yaml')
+    algo = FLLEACHPSO(net, config_path='config/fl_leach_pso.yaml', **sim_kwargs)
 elif ALGORITHM == 'SCA-LEVY':
-    algo = SCALEVY(net, config_path='config/sca_levy.yaml')
+    algo = SCALEVY(net, config_path='config/sca_levy.yaml', **sim_kwargs)
 elif ALGORITHM == 'FC-CRA':
-    algo = FCCRA(net, config_path='config/fc_cra.yaml')
+    algo = FCCRA(net, config_path='config/fc_cra.yaml', **sim_kwargs)
 elif ALGORITHM == 'EE-TCM':
-    algo = EETCM(net, config_path='config/ee_tcm.yaml')
+    algo = EETCM(net, config_path='config/ee_tcm.yaml', **sim_kwargs)
 
 algo.run()

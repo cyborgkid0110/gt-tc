@@ -10,7 +10,3 @@ payoff: 1.0e-3            # rho: benefit/payoff for being a cluster head
 alpha: 1.5                # weight for energy-balance benefit f_e
 beta: 0.1                 # weight for connectivity benefit f_pr
 mu: 0.01                  # scaling factor for integral energy-cost c_i
-
-# ── Simulation ───────────────────────────────────────────────────────
-max_rounds: 50000         # maximum number of simulation rounds
-plot_period: 50           # generate plots every N rounds

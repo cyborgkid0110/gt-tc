@@ -45,8 +45,8 @@ import graph
 class EETCM(BaseAlgorithm):
     """EE-TCM clustering + topology-control game algorithm."""
 
-    def __init__(self, net: NetworkModel, config_path: str = 'config/ee_tcm.yaml'):
-        super().__init__(net, config_path)
+    def __init__(self, net: NetworkModel, config_path: str = 'config/ee_tcm.yaml', **kwargs):
+        super().__init__(net, config_path, **kwargs)
 
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
@@ -65,9 +65,6 @@ class EETCM(BaseAlgorithm):
         net = self.net
         net.reset_round()
 
-        print(f'EE-TCM Round {self.t} start. '
-              f'Dead: {self.dead_nodes}/{net.num_nodes}')
-
         for s in net.sensors:
             s.is_ch = False
             s.ch_neighbors = []
@@ -83,6 +80,11 @@ class EETCM(BaseAlgorithm):
 
         # ---- Phase 1: clustering ------------------------------------
         self._ch_election(alive)
+
+        num_ch = sum(1 for s in alive if s.is_ch)
+        print(f'EE-TCM Round {self.t}: CHs={num_ch}, '
+              f'Dead={self.dead_nodes}/{net.num_nodes}')
+
         self._cluster_formation()
         self._filter_neighbours()
         self._connect_unaffiliated()

@@ -15,7 +15,3 @@ kmeans_max_iter: 100
 # Gap statistic
 gap_k_max: 20         # max clusters to test
 gap_n_ref: 10         # number of reference datasets
-
-# Simulation
-max_rounds: 50000
-plot_period: 1000

@@ -7,7 +7,3 @@ d_max_factor: 0.5       # d_max = d_max_factor * calc_comm_range(p_max)
                         # Friis substitute for paper's 1.2·d_0 near-BS threshold
 z_realloc_pct: 0.5      # rebuild clusters when any CH.e_res / e_ref ≤ z_realloc_pct
 chcc_avg_mode: mean     # 'mean' | 'median' — aggregation for ∂_th threshold
-
-# ── Simulation ────────────────────────────────────────────────────────
-max_rounds: 50000
-plot_period: 1000

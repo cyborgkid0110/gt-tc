@@ -15,7 +15,3 @@ kappa_levels: 10          # K: number of unwillingness levels; also governs max 
 # ── Wait Time Priority ──────────────────────────────────────────────
 tau: 1.0                  # time constant: t_w = τ * E_i + σ
 sigma_max: 0.1            # max random perturbation for tie-breaking
-
-# ── Simulation ───────────────────────────────────────────────────────
-max_rounds: 50000
-plot_period: 1000

@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import yaml
 
 from model import NetworkModel
 
@@ -7,14 +6,11 @@ from model import NetworkModel
 class BaseAlgorithm(ABC):
     """Abstract base for all WSN topology-control algorithms."""
 
-    def __init__(self, net: NetworkModel, config_path: str):
+    def __init__(self, net: NetworkModel, config_path: str,
+                 max_rounds: int = 50000, plot_period: int = 1000):
         self.net = net
-
-        with open(config_path, 'r') as f:
-            cfg = yaml.safe_load(f)
-
-        self.max_rounds = cfg['max_rounds']
-        self.plot_period = cfg['plot_period']
+        self.max_rounds = max_rounds
+        self.plot_period = plot_period
 
         # simulation bookkeeping
         self.t = 0
@@ -42,4 +38,4 @@ class BaseAlgorithm(ABC):
         self.dead_nodes += 1
         if self.t_no_dead is None:
             self.t_no_dead = self.t
-        print('Dead nodes:', self.dead_nodes)
+        # print('Dead nodes:', self.dead_nodes)

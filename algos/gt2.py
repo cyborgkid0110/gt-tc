@@ -18,8 +18,8 @@ import graph
 class GT2(BaseAlgorithm):
     """Game-Theoretic Topology Control (two-stage) algorithm."""
 
-    def __init__(self, net: NetworkModel, config_path: str = 'config/gt2.yaml'):
-        super().__init__(net, config_path)
+    def __init__(self, net: NetworkModel, config_path: str = 'config/gt2.yaml', **kwargs):
+        super().__init__(net, config_path, **kwargs)
 
         # load GT2-specific parameters
         with open(config_path, 'r') as f:
@@ -52,7 +52,10 @@ class GT2(BaseAlgorithm):
         # ---- Phase 2: clustering game --------------------------------
         ch_can, ch_true = self._clustering_game()
         if ch_true == 0:
-            return True     # no CH elected — retry round (t not incremented)
+            self._maintenance_no_cluster()
+            if self.dead_nodes >= net.num_nodes:
+                return False
+            return True
 
         # ---- Phase 3: cluster formation ------------------------------
         self._cluster_formation()
@@ -376,3 +379,14 @@ class GT2(BaseAlgorithm):
 
                         if s.e_res <= 0:
                             self._track_death(s)
+
+    def _maintenance_no_cluster(self):
+        """Deduct CM energy for all alive nodes when no CH is elected."""
+        net = self.net
+        for s in net.sensors:
+            if not s.is_alive:
+                continue
+            s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
+            s.e_res -= s.c_cm
+            if s.e_res <= 0:
+                self._track_death(s)

@@ -3,7 +3,3 @@
 
 # ── Clustering ──────────────────────────────────────────────────────
 p_ch_fraction: 0.05           # P: desired fraction of cluster heads per round
-
-# ── Simulation ──────────────────────────────────────────────────────
-max_rounds: 50000             # maximum number of simulation rounds
-plot_period: 1000               # generate plots every N rounds

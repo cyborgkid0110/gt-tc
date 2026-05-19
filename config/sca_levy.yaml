@@ -11,7 +11,3 @@ levy_beta: 1.5                # Mantegna stability parameter β
 # ── Cluster sizing ────────────────────────────────────────────────────
 p_ch_fraction: 0.05           # p: target CH fraction (~10 CHs for 200 nodes)
 high_energy_fraction: 0.5     # candidate pool = top 50% alive nodes by residual energy
-
-# ── Simulation ────────────────────────────────────────────────────────
-max_rounds: 50000
-plot_period: 1000

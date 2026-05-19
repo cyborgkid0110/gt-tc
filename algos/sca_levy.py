@@ -38,8 +38,8 @@ import graph
 class SCALEVY(BaseAlgorithm):
     """SCA-Lévy clustering routing algorithm."""
 
-    def __init__(self, net: NetworkModel, config_path: str = 'config/sca_levy.yaml'):
-        super().__init__(net, config_path)
+    def __init__(self, net: NetworkModel, config_path: str = 'config/sca_levy.yaml', **kwargs):
+        super().__init__(net, config_path, **kwargs)
 
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
@@ -73,9 +73,6 @@ class SCALEVY(BaseAlgorithm):
         net = self.net
         net.reset_round()
 
-        print(f'SCA-LEVY Round {self.t} start. '
-              f'Dead: {self.dead_nodes}/{net.num_nodes}')
-
         # ---- reset per-round sensor state ---------------------------
         for s in net.sensors:
             s.is_ch = False
@@ -100,6 +97,9 @@ class SCALEVY(BaseAlgorithm):
         best_grouping = self._sca_levy_optimize(candidates, k_opt, alive)
         for s in best_grouping:
             s.is_ch = True
+
+        print(f'SCA-LEVY Round {self.t}: CHs={len(best_grouping)}, '
+              f'Dead={self.dead_nodes}/{net.num_nodes}')
 
         # ---- Phase 2: cluster formation -----------------------------
         self._cluster_formation()

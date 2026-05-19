@@ -12,7 +12,3 @@ mode: 'DIA'           # 'DIA' (delta-improvement, fair, O(n^2)) or
 # Reduces message overhead to O(1) per node.
 # Set to null (or omit) for standard DIA with global reachability.
 dia_k: null           # e.g. 3 for LDIA with k=3; null for global DIA
-
-# ── Simulation ───────────────────────────────────────────────────────
-max_rounds: 50000
-plot_period: 1000
