@@ -468,24 +468,28 @@ class GTFR(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _steady_state(self):
-        """Deduct energy for one round of data transmission."""
+        """Deduct energy using routing-based per-hop TX cost."""
         net = self.net
+
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
 
         for s in net.sensors:
             if not s.is_alive:
                 continue
 
             if s.is_ch:
-                s.c_ch = net.calc_node_cost(s, 'CH', clustering=False)
+                info = routing_tree.get(s.id)
+                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
+                          + net.calc_tx_cost(tx_dist, 'CH'))
                 s.e_res -= s.c_ch
-
                 if s.e_res <= 0:
                     self._track_death(s)
 
-            else:
-                s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
+            elif s.id in costs:
+                s.c_cm = costs[s.id]
                 s.e_res -= s.c_cm
-
                 if s.e_res <= 0:
                     self._track_death(s)
 

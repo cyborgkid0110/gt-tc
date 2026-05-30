@@ -329,33 +329,30 @@ class DIAMIA(BaseAlgorithm):
         return self.M * self._compute_reachability(sensor) - sensor.power
 
     def _omega(self, si: Sensor, sj: Sensor) -> float:
-        """Minimum power for si to reach sj (inverse Friis model)."""
+        """Minimum power for si to reach sj (inverse comm-range model)."""
+        net = self.net
         d = si.distance_to(sj)
-        return self.net.pth * (4 * math.pi * d / self.net.wave) ** 2
+        return (d ** net.gamma * net.p_th
+                * (4 * math.pi / net.wave) ** net.gamma
+                / (net.g_ant * net.eta))
 
     # ------------------------------------------------------------------ #
     #  Maintenance: energy deduction                                       #
     # ------------------------------------------------------------------ #
 
     def _maintenance(self) -> None:
-        """Deduct one round of energy from all alive nodes.
-
-        Each DIA-MIA node acts as a sensing + transmitting node (CM role,
-        no aggregation). Distance = sensor.rc (post-adaptation comm range).
-        """
+        """Deduct one round of energy using routing-based per-hop TX cost."""
         net = self.net
+
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
 
         for s in net.sensors:
             if not s.is_alive:
                 continue
-
-            # CM role: sense + process + transmit (no aggregation)
-            # clustering=False → d = s.rc (actual post-adaptation range)
-            cost = net.calc_node_cost(s, 'CM', clustering=False)
-            s.c_cm = cost
-            s.e_res -= cost
-
-            if s.e_res <= 0:
-                self._track_death(s)
-                # Topology changed: re-adapt before the next maintenance round
-                self._needs_adapt = True
+            if s.id in costs:
+                s.c_cm = costs[s.id]
+                s.e_res -= s.c_cm
+                if s.e_res <= 0:
+                    self._track_death(s)
+                    self._needs_adapt = True

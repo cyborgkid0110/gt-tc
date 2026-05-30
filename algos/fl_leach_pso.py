@@ -701,50 +701,25 @@ class FLLEACHPSO(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _steady_state(self) -> None:
-        """Deduct energy for one round of two-tier communication.
-
-        PCH: CH role, transmits to BS (distance = to origin).
-        SCH: CH role, transmits to PCH.
-        CM:  CM role, transmits to its ch_belong (whichever CH it joined).
-        """
+        """Deduct energy using routing-based per-hop TX cost."""
         net = self.net
 
-        for cid, members in self._clusters.items():
-            pch = self._pchs.get(cid)
-            sch = self._schs.get(cid)
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
 
-            # PCH energy
-            if pch is not None and pch.is_alive:
-                saved_rc = pch.rc
-                pch.rc = math.hypot(pch.x, pch.y)
-                pch.c_ch = net.calc_node_cost(pch, 'CH', clustering=False)
-                pch.rc = saved_rc
-                pch.e_res -= pch.c_ch
-                if pch.e_res <= 0:
-                    self._track_death(pch)
-
-            # SCH energy
-            if sch is not None and sch.is_alive:
-                if pch is not None:
-                    saved_rc = sch.rc
-                    sch.rc = sch.distance_to(pch)
-                    sch.c_ch = net.calc_node_cost(sch, 'CH', clustering=False)
-                    sch.rc = saved_rc
-                    sch.e_res -= sch.c_ch
-                    if sch.e_res <= 0:
-                        self._track_death(sch)
-
-        # CM energy: each node transmits to its actual ch_belong
         for s in net.sensors:
-            if not s.is_alive or s.is_ch:
+            if not s.is_alive:
                 continue
-            if s.ch_belong is not None:
-                saved_rc = s.rc
-                s.rc = s.distance_to(s.ch_belong)
-                s.c_cm = net.calc_node_cost(s, 'CM', clustering=False)
-                s.rc = saved_rc
-            else:
-                s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
-            s.e_res -= s.c_cm
-            if s.e_res <= 0:
-                self._track_death(s)
+            if s.is_ch:
+                info = routing_tree.get(s.id)
+                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
+                          + net.calc_tx_cost(tx_dist, 'CH'))
+                s.e_res -= s.c_ch
+                if s.e_res <= 0:
+                    self._track_death(s)
+            elif s.id in costs:
+                s.c_cm = costs[s.id]
+                s.e_res -= s.c_cm
+                if s.e_res <= 0:
+                    self._track_death(s)

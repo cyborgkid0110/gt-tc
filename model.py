@@ -73,9 +73,21 @@ class NetworkModel:
 
         self._pos_map = {s.pos: s for s in sensors}
 
-        # Radio parameters
-        self.pth = params.get('pth', 7e-10)
-        self.wave = params.get('wave', 0.1224)
+        # Radio parameters — link-budget model (Tudose et al. Eq. 7–8)
+        self.snr = params.get('snr', 10)
+        self.nf_rx = params.get('nf_rx', 6.31)
+        self.n0 = params.get('n0', 3.98e-21)
+        self.bw = params.get('bw', 3e6)
+        self.wave = params.get('wave', 0.125)
+        self.gamma = params.get('gamma', 2.0)
+        self.g_ant = params.get('g_ant', 1.0)
+        self.eta = params.get('eta', 0.30)
+        self.r_bit = params.get('r_bit', 250e3)
+
+        self.p_th = self.snr * self.nf_rx * self.n0 * self.bw
+        self.eps_amp = (self.p_th * (4 * math.pi / self.wave) ** self.gamma
+                        / (self.g_ant * self.eta * self.r_bit))
+
         self.p_min = params.get('p_min', 0.01)
         self.p_max = params.get('p_max', 0.08)
         self.p_step = params.get('p_step', 0.0001)
@@ -104,12 +116,10 @@ class NetworkModel:
     # ------------------------------------------------------------------ #
 
     def calc_comm_range(self, power):
-        """R_tx from Friis equation."""
-        return math.sqrt((power * self.wave ** 2) / (self.pth * 16 * math.pi ** 2))
-
-    def calc_rx_power(self, p_tx, d):
-        """Received power at distance d."""
-        return (p_tx * self.wave ** 2) / (16 * math.pi ** 2 * d ** 2)
+        """Maximum single-hop range at given transmit power (d_max formula)."""
+        return (power * self.g_ant * self.eta
+                / (self.p_th * (4 * math.pi / self.wave) ** self.gamma)
+                ) ** (1 / self.gamma)
 
     def update_comm_range(self, sensor):
         sensor.rc = self.calc_comm_range(sensor.power)
@@ -119,11 +129,10 @@ class NetworkModel:
     # ------------------------------------------------------------------ #
 
     def calc_tx_cost(self, d, role, layer_depth=1):
-        """Transmission energy with Friis-based amplifier model."""
+        """Transmission energy: E_TX = n * (E_elec + eps_amp * d^gamma)."""
         m_bit = self.m_pkt_s if role == 'CM' else self.m_pkt_l
-        t_tx = 1e-6
         return m_bit * layer_depth * (
-            self.e_elec + (4 * math.pi / self.wave) ** 2 * self.pth * t_tx * d ** 2
+            self.e_elec + self.eps_amp * d ** self.gamma
         )
 
     def calc_node_cost(self, sensor, role, clustering, layer_depth=1):
@@ -150,6 +159,104 @@ class NetworkModel:
             c_rx = self.m_pkt_l * self.e_elec
             c_agg = self.m_pkt_l * self.e_agg
             return c_rx + c_agg + c_tx
+
+    # ------------------------------------------------------------------ #
+    #  Routing-based maintenance energy model                             #
+    # ------------------------------------------------------------------ #
+
+    def build_routing_tree(self):
+        """Build shortest-path (fewest hops) tree from all alive nodes to BS.
+
+        Returns dict[int, dict] keyed by sensor ID with:
+          parent_id: int | None  (next-hop toward BS; None for gateways)
+          tx_dist: float         (distance to next-hop or to BS)
+          depth: int             (hop count to BS)
+          num_descendants: int   (nodes in subtree, for relay cost)
+        """
+        from collections import deque
+
+        gateways = []
+        for s in self.sensors:
+            if not s.is_alive:
+                continue
+            if math.hypot(s.x, s.y) <= s.rc:
+                gateways.append(s.id)
+
+        rev_adj = [[] for _ in range(self.num_nodes)]
+        for i in range(self.num_nodes):
+            if not self.sensors[i].is_alive:
+                continue
+            for j in range(self.num_nodes):
+                if i != j and self.sensors[j].is_alive and self.edges[i, j] == 1:
+                    rev_adj[j].append(i)
+
+        parent = {}
+        depth = {}
+        queue = deque()
+        for gid in gateways:
+            parent[gid] = None
+            depth[gid] = 0
+            queue.append(gid)
+
+        while queue:
+            curr = queue.popleft()
+            for nb_id in rev_adj[curr]:
+                if nb_id not in parent:
+                    parent[nb_id] = curr
+                    depth[nb_id] = depth[curr] + 1
+                    queue.append(nb_id)
+
+        descendants = {nid: 0 for nid in parent}
+        for nid in sorted(parent, key=lambda x: depth[x], reverse=True):
+            p = parent[nid]
+            if p is not None:
+                descendants[p] += 1 + descendants[nid]
+
+        tree = {}
+        for nid in parent:
+            s = self.sensors[nid]
+            pid = parent[nid]
+            if pid is None:
+                tx_d = math.hypot(s.x, s.y)
+            else:
+                tx_d = s.distance_to(self.sensors[pid])
+            tree[nid] = {
+                'parent_id': pid,
+                'tx_dist': tx_d,
+                'depth': depth[nid],
+                'num_descendants': descendants[nid],
+            }
+        return tree
+
+    def compute_maintenance_costs(self, routing_tree):
+        """Per-node energy cost based on routing tree (CM role only).
+
+        Returns dict[int, float] keyed by sensor ID.
+        Nodes without a route pay sensing + processing only.
+        """
+        costs = {}
+        for s in self.sensors:
+            if not s.is_alive:
+                continue
+
+            m_bit = 8
+            i_sense = random.uniform(1e-8, 5e-7)
+            c_sense = s.Vpre * i_sense * m_bit
+            c_process = s.Vpre * m_bit * i_sense / 4
+
+            if s.id not in routing_tree:
+                costs[s.id] = c_sense + c_process
+                continue
+
+            info = routing_tree[s.id]
+            tx = self.m_pkt_s * (self.e_elec
+                                 + self.eps_amp * info['tx_dist'] ** self.gamma)
+            rx = self.m_pkt_s * self.e_elec
+            nd = info['num_descendants']
+
+            costs[s.id] = c_sense + c_process + (1 + nd) * tx + nd * rx
+
+        return costs
 
     # ------------------------------------------------------------------ #
     #  Utility functions (power-control game)                             #

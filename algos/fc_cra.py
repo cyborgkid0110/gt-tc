@@ -317,7 +317,9 @@ class FCCRA(BaseAlgorithm):
         net = self.net
         if d <= 0:
             return net.p_min
-        return (d * d) * net.pth * 16.0 * math.pi ** 2 / (net.wave ** 2)
+        return (d ** net.gamma * net.p_th
+                * (4 * math.pi / net.wave) ** net.gamma
+                / (net.g_ant * net.eta))
 
     # ------------------------------------------------------------------ #
     #  Shared cluster-repair helpers (copy pattern from LEACH/SCA-Lévy)   #
@@ -449,80 +451,29 @@ class FCCRA(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _maintenance(self, ch_routes: dict[int, list[Sensor]]) -> None:
-        """Deduct energy for data transmission this round.
-
-        Intra-cluster: layered-batch pattern (CMs deeper in the tree pay
-        layer_depth × CM cost — same as GT2/SCA-Lévy).
-        CH→BS: each CH transmits along its chain; intermediate CHs pay an
-        m_pkt_l · e_elec reception cost per forwarded packet.
-        """
+        """Deduct energy using routing-based per-hop TX cost."""
         net = self.net
 
-        mod_edges = net.create_cluster_subgraph()
-        mod_net_dict = net.to_network_dict(edges=mod_edges)
-        node_dict = net.to_node_dict()
-        G = graph.build_graph(mod_net_dict['vertices'], mod_net_dict['edges'])
-        layered_batches = graph.divide_network_by_clusters(G, node_dict)
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
 
-        for ch_pos, layers in layered_batches.items():
-            ch = net.sensor_by_pos(tuple(float(x) for x in ch_pos))
-            if ch is None or not ch.is_alive:
+        for s in net.sensors:
+            if not s.is_alive:
                 continue
-
-            depth = len(layers)
-            # Intra-cluster CH role is reception + aggregation only. The tx leg
-            # would double-count the explicit CH→CH→BS forwarding pass below;
-            # we therefore bypass `calc_node_cost(ch, 'CH')` (which bundles rx,
-            # agg and a tx term at `ch.rc`) and charge rx + agg directly.
-            ch.c_ch = net.m_pkt_l * (net.e_elec + net.e_agg)
-            ch.e_res -= ch.c_ch
-            if ch.e_res <= 0:
-                self._track_death(ch)
-                self._cluster_stable = False
-
-            for i, layer in enumerate(layers):
-                if i == 0:
-                    continue
-                for batch in layer:
-                    for node_pos in batch:
-                        s = net.sensor_by_pos(
-                            tuple(float(x) for x in node_pos))
-                        if s is None or not s.is_alive:
-                            continue
-                        s.c_cm = net.calc_node_cost(
-                            s, 'CM', clustering=False,
-                            layer_depth=depth - i)
-                        s.e_res -= s.c_cm
-                        if s.e_res <= 0:
-                            self._track_death(s)
-
-        # CH → CH → BS multi-hop
-        relay_rx_cost = net.m_pkt_l * net.e_elec
-        for ch_id, chain in ch_routes.items():
-            src = net.sensors[ch_id]
-            if not src.is_alive:
-                continue
-            cur = src
-            hops = chain + [None]  # sentinel = final hop is to BS
-            for nxt in hops:
-                d = (math.hypot(cur.x, cur.y) if nxt is None
-                     else cur.distance_to(nxt))
-                tx = net.calc_tx_cost(d, 'CH')
-                cur.e_res -= tx
-                if cur.e_res <= 0:
-                    self._track_death(cur)
+            if s.is_ch:
+                info = routing_tree.get(s.id)
+                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
+                          + net.calc_tx_cost(tx_dist, 'CH'))
+                s.e_res -= s.c_ch
+                if s.e_res <= 0:
+                    self._track_death(s)
                     self._cluster_stable = False
-                    break
-                if nxt is None:
-                    break
-                if not nxt.is_alive:
-                    break
-                nxt.e_res -= relay_rx_cost
-                if nxt.e_res <= 0:
-                    self._track_death(nxt)
-                    self._cluster_stable = False
-                    break
-                cur = nxt
+            elif s.id in costs:
+                s.c_cm = costs[s.id]
+                s.e_res -= s.c_cm
+                if s.e_res <= 0:
+                    self._track_death(s)
 
     # ------------------------------------------------------------------ #
     #  Reference helpers (NOT on the main flow — per PLAN.md)              #

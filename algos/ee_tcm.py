@@ -456,91 +456,34 @@ class EETCM(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _maintenance(self) -> None:
-        """Deduct energy for one round of data flow, using the shared layered-
-        batch pattern. CH charge bypasses `calc_node_cost('CH')`'s tx leg to
-        avoid double-charging with the explicit CH→BS hop (same pattern as
-        FC-CRA). CM maintenance is optionally reduced by the compression
-        factor 1/a and offset by the compression overhead."""
+        """Deduct energy using routing-based per-hop TX cost.
+        CM costs are optionally reduced by the compression factor 1/a."""
         net = self.net
 
-        mod_edges = net.create_cluster_subgraph()
-        mod_net_dict = net.to_network_dict(edges=mod_edges)
-        node_dict = net.to_node_dict()
-        G = graph.build_graph(mod_net_dict['vertices'], mod_net_dict['edges'])
-        layered_batches = graph.divide_network_by_clusters(G, node_dict)
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
 
-        # Compression gate: `compression_a == 1` means disabled; in that mode
-        # the overhead is also skipped so a nonzero `compression_overhead` in
-        # the config doesn't silently perturb the energy accounting.
         compression_enabled = self._compression_a > 1
         cm_compression = (1.0 / self._compression_a
                           if compression_enabled else 1.0)
         cm_overhead = self._compression_overhead if compression_enabled else 0.0
 
-        charged_chs: set[int] = set()
-        for ch_pos, layers in layered_batches.items():
-            ch = net.sensor_by_pos(tuple(float(x) for x in ch_pos))
-            if ch is None or not ch.is_alive:
+        for s in net.sensors:
+            if not s.is_alive:
                 continue
-            charged_chs.add(ch.id)
-
-            depth = len(layers)
-            # CH: reception + aggregation only (tx charged per-hop below).
-            ch.c_ch = net.m_pkt_l * (net.e_elec + net.e_agg)
-            ch.e_res -= ch.c_ch
-            if ch.e_res <= 0:
-                self._track_death(ch)
-
-            for i, layer in enumerate(layers):
-                if i == 0:
+            if s.is_ch:
+                info = routing_tree.get(s.id)
+                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
+                          + net.calc_tx_cost(tx_dist, 'CH'))
+                s.e_res -= s.c_ch
+                if s.e_res <= 0:
+                    self._track_death(s)
+            elif s.id in costs:
+                if not s._entered:
                     continue
-                for batch in layer:
-                    for node_pos in batch:
-                        s = net.sensor_by_pos(
-                            tuple(float(x) for x in node_pos))
-                        if s is None or not s.is_alive:
-                            continue
-                        if not s._entered:
-                            continue
-                        cost = net.calc_node_cost(
-                            s, 'CM', clustering=False,
-                            layer_depth=depth - i)
-                        cost = cost * cm_compression + cm_overhead
-                        s.c_cm = cost
-                        s.e_res -= cost
-                        if s.e_res <= 0:
-                            self._track_death(s)
-
-        # CH → BS (direct single hop; inter-cluster routing is out of scope
-        # for EE-TCM per the paper — the topology-control game optimises only
-        # intra-cluster transmit powers).
-        for ch_pos in layered_batches:
-            ch = net.sensor_by_pos(tuple(float(x) for x in ch_pos))
-            if ch is None or not ch.is_alive:
-                continue
-            d = math.hypot(ch.x, ch.y)
-            tx = net.calc_tx_cost(d, 'CH')
-            ch.e_res -= tx
-            if ch.e_res <= 0:
-                self._track_death(ch)
-
-        # Lone CHs absent from layered_batches (no cluster members / no edges)
-        for s in net.sensors:
-            if not s.is_alive or not s.is_ch or s.id in charged_chs:
-                continue
-            s.c_ch = net.m_pkt_l * (net.e_elec + net.e_agg)
-            s.e_res -= s.c_ch
-            d = math.hypot(s.x, s.y)
-            tx = net.calc_tx_cost(d, 'CH')
-            s.e_res -= tx
-            if s.e_res <= 0:
-                self._track_death(s)
-
-        # Unaffiliated alive nodes still consume energy
-        for s in net.sensors:
-            if not s.is_alive or s.is_ch or s.ch_belong is not None:
-                continue
-            s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
-            s.e_res -= s.c_cm
-            if s.e_res <= 0:
-                self._track_death(s)
+                cost = costs[s.id] * cm_compression + cm_overhead
+                s.c_cm = cost
+                s.e_res -= cost
+                if s.e_res <= 0:
+                    self._track_death(s)

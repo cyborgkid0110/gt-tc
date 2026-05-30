@@ -6,6 +6,7 @@ Two-stage non-cooperative game:
   Game 2 — Pure-strategy power-control game for intra-cluster topology optimisation.
 """
 
+import math
 import random
 import yaml
 
@@ -350,43 +351,39 @@ class GT2(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _maintenance(self, layered_batches: dict):
-        """Deduct energy for data transmission and track dead nodes."""
+        """Deduct energy using routing-based per-hop TX cost."""
         net = self.net
 
-        for ch_pos, layers in layered_batches.items():
-            ch = net.sensor_by_pos(tuple(float(x) for x in ch_pos))
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
 
-            depth = len(layers)
-            ch.c_ch = net.calc_node_cost(ch, 'CH', clustering=False)
-            ch.e_res -= ch.c_ch
-
-            if ch.e_res <= 0:
-                self._track_death(ch)
-
-            for i, layer in enumerate(layers):
-                if i == 0:
-                    continue
-                for batch in layer:
-                    for node_pos in batch:
-                        s = net.sensor_by_pos(
-                            tuple(float(x) for x in node_pos))
-                        if not s.is_alive:
-                            continue
-
-                        s.c_cm = net.calc_node_cost(
-                            s, 'CM', clustering=False, layer_depth=depth - i)
-                        s.e_res -= s.c_cm
-
-                        if s.e_res <= 0:
-                            self._track_death(s)
-
-    def _maintenance_no_cluster(self):
-        """Deduct CM energy for all alive nodes when no CH is elected."""
-        net = self.net
         for s in net.sensors:
             if not s.is_alive:
                 continue
-            s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
-            s.e_res -= s.c_cm
-            if s.e_res <= 0:
-                self._track_death(s)
+            if s.is_ch:
+                info = routing_tree.get(s.id)
+                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
+                          + net.calc_tx_cost(tx_dist, 'CH'))
+                s.e_res -= s.c_ch
+                if s.e_res <= 0:
+                    self._track_death(s)
+            elif s.id in costs:
+                s.c_cm = costs[s.id]
+                s.e_res -= s.c_cm
+                if s.e_res <= 0:
+                    self._track_death(s)
+
+    def _maintenance_no_cluster(self):
+        """Deduct energy using routing-based per-hop TX cost (no CHs)."""
+        net = self.net
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
+        for s in net.sensors:
+            if not s.is_alive:
+                continue
+            if s.id in costs:
+                s.c_cm = costs[s.id]
+                s.e_res -= s.c_cm
+                if s.e_res <= 0:
+                    self._track_death(s)

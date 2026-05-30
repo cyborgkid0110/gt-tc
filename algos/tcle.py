@@ -367,17 +367,18 @@ class TCLE(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _maintenance(self) -> None:
-        """Deduct one round of energy from all alive nodes."""
+        """Deduct one round of energy using routing-based per-hop TX cost."""
         net = self.net
+
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
 
         for s in net.sensors:
             if not s.is_alive:
                 continue
-
-            cost = net.calc_node_cost(s, 'CM', clustering=False)
-            s.c_cm = cost
-            s.e_res -= cost
-
-            if s.e_res <= 0:
-                self._track_death(s)
-                self._needs_adapt = True
+            if s.id in costs:
+                s.c_cm = costs[s.id]
+                s.e_res -= s.c_cm
+                if s.e_res <= 0:
+                    self._track_death(s)
+                    self._needs_adapt = True

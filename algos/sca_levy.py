@@ -483,77 +483,28 @@ class SCALEVY(BaseAlgorithm):
     def _maintenance(self,
                      layered_batches: dict,
                      ch_routes: dict[int, list[Sensor]]):
-        """Deduct energy for data transmission this round.
-
-        Intra-cluster: CMs pay `layer_depth × CM cost` (deeper layers forward
-        through more hops).
-        CH→CH→BS: each CH pays a tx cost for each hop in its chain; intermediate
-        CHs additionally pay rx cost for forwarding.
-        """
+        """Deduct energy using routing-based per-hop TX cost."""
         net = self.net
 
-        # ---- intra-cluster (CH aggregation + CM forwarding) ---------
-        for ch_pos, layers in layered_batches.items():
-            ch = net.sensor_by_pos(tuple(float(x) for x in ch_pos))
-            if ch is None or not ch.is_alive:
+        routing_tree = net.build_routing_tree()
+        costs = net.compute_maintenance_costs(routing_tree)
+
+        for s in net.sensors:
+            if not s.is_alive:
                 continue
-
-            depth = len(layers)
-            # CH aggregation / reception cost for this cluster
-            ch.c_ch = net.calc_node_cost(ch, 'CH', clustering=False)
-            ch.e_res -= ch.c_ch
-            if ch.e_res <= 0:
-                self._track_death(ch)
-
-            for i, layer in enumerate(layers):
-                if i == 0:
-                    continue
-                for batch in layer:
-                    for node_pos in batch:
-                        s = net.sensor_by_pos(
-                            tuple(float(x) for x in node_pos))
-                        if s is None or not s.is_alive:
-                            continue
-                        s.c_cm = net.calc_node_cost(
-                            s, 'CM', clustering=False,
-                            layer_depth=depth - i)
-                        s.e_res -= s.c_cm
-                        if s.e_res <= 0:
-                            self._track_death(s)
-
-        # ---- CH→CH→BS multi-hop forwarding --------------------------
-        # Each alive CH sends its aggregated packet toward the BS via the
-        # precomputed chain. Intermediate CHs pay an extra m_pkt_l × e_elec
-        # reception cost per packet they forward.
-        relay_rx_cost = net.m_pkt_l * net.e_elec
-
-        for ch_id, chain in ch_routes.items():
-            src = next((s for s in net.sensors if s.id == ch_id), None)
-            if src is None or not src.is_alive:
-                continue
-
-            cur = src
-            hops = chain + [None]  # sentinel = final hop goes to BS
-            for nxt in hops:
-                if nxt is None:
-                    d = math.hypot(cur.x, cur.y)                # CH → BS
-                else:
-                    d = cur.distance_to(nxt)                    # CH → CH
-                tx = net.calc_tx_cost(d, 'CH')
-                cur.e_res -= tx
-                if cur.e_res <= 0:
-                    self._track_death(cur)
-                    break
-
-                if nxt is None:
-                    break
-                if not nxt.is_alive:
-                    break
-                nxt.e_res -= relay_rx_cost
-                if nxt.e_res <= 0:
-                    self._track_death(nxt)
-                    break
-                cur = nxt
+            if s.is_ch:
+                info = routing_tree.get(s.id)
+                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
+                          + net.calc_tx_cost(tx_dist, 'CH'))
+                s.e_res -= s.c_ch
+                if s.e_res <= 0:
+                    self._track_death(s)
+            elif s.id in costs:
+                s.c_cm = costs[s.id]
+                s.e_res -= s.c_cm
+                if s.e_res <= 0:
+                    self._track_death(s)
 
     # ------------------------------------------------------------------ #
     #  Reference: Eq. (16) relay-node selection (not in main flow)         #
