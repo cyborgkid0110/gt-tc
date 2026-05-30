@@ -19,9 +19,9 @@ Notes (see PLAN.md):
   – `f_k` checks **strong** connectivity on the directed cluster graph (plus
     biconnectivity on the undirected version when k=2), matching the project-
     wide connectivity convention.
-  – Paper's entrance/harvesting sub-game (x_i ∈ {0,1} with harvested energy
-    f_i) is not materialised: the topology-control game replaces the discrete
-    decision with a continuous p_i ∈ [p_min, p_max] — EFTCG's canonical form.
+  – Paper's entrance sub-game (x_i ∈ {0,1}) is implemented as a per-cluster
+    mixed-strategy NE. Harvested energy f_i = 0 (nodes that stay out simply
+    avoid energy cost). Entering nodes then run the power-control game.
   – Data compression (§3.4 E_saving = (1 − 1/a)·(E_P+E_T+E_R) − E_compress)
     is implemented but disabled by default (`compression_a = 1`) so the
     benchmark result isn't biased by a side channel the other algorithms lack.
@@ -68,6 +68,7 @@ class EETCM(BaseAlgorithm):
         for s in net.sensors:
             s.is_ch = False
             s.ch_neighbors = []
+            s._entered = False
             if s.is_alive:
                 s.power = net.p_max / 4
                 s.rc = net.calc_comm_range(s.power)
@@ -94,6 +95,7 @@ class EETCM(BaseAlgorithm):
             directional_wsn_plot(net.to_network_dict(), net.to_node_dict())
 
         # ---- Phase 2: topology-control game per cluster -------------
+        self._entrance_game()
         self._adapt_topology()
 
         # ---- Phase 3: maintenance -----------------------------------
@@ -246,23 +248,97 @@ class EETCM(BaseAlgorithm):
                     net.disconnect(s, nb)
 
     # ------------------------------------------------------------------ #
-    #  Phase 2: Topology Control Game (§3.5)                              #
+    #  Phase 2a: Entrance Sub-Game (§3.5)                                 #
     # ------------------------------------------------------------------ #
 
-    def _neighbor_energy(self, sensor: Sensor) -> float:
+    def _entrance_game(self) -> None:
+        """Per-cluster mixed-strategy entrance sub-game.
+
+        Each CM decides enter (transmit) or stay out (save energy) via the
+        closed-form mixed NE derived from the paper's expected utility with
+        f_i = 0.  CHs always enter.
+        """
+        net = self.net
+
+        clusters: dict[int, list[Sensor]] = {}
+        for s in net.sensors:
+            if not s.is_alive:
+                continue
+            if s.is_ch:
+                s._entered = True
+                clusters.setdefault(s.id, []).append(s)
+            elif s.ch_belong is not None:
+                clusters.setdefault(s.ch_belong.id, []).append(s)
+
+        total_entered = 0
+        total_stayed_out = 0
+
+        for ch_id, members in clusters.items():
+            ch = net.sensors[ch_id]
+            cms = [s for s in members if not s.is_ch]
+
+            if not cms:
+                continue
+
+            eligible: list[tuple[Sensor, float, float]] = []
+            for s in cms:
+                g_j = s.e_res
+                c_j = net.calc_tx_cost(s.distance_to(ch), 'CM')
+                if g_j > c_j:
+                    eligible.append((s, g_j, c_j))
+
+            n = len(eligible)
+            if n == 0:
+                total_stayed_out += len(cms)
+                continue
+
+            if n == 1:
+                eligible[0][0]._entered = True
+                total_entered += 1
+                total_stayed_out += len(cms) - 1
+                continue
+
+            log_prod = sum(math.log(c_j / g_j) for _, g_j, c_j in eligible)
+            R = math.exp(log_prod / (n - 1))
+
+            for s, g_j, c_j in eligible:
+                p_j = 1.0 - R * g_j / c_j
+                p_j = max(0.0, min(1.0, p_j))
+
+                if random.random() < p_j:
+                    s._entered = True
+                    total_entered += 1
+                else:
+                    total_stayed_out += 1
+
+            total_stayed_out += len(cms) - n
+
+        print(f'  entrance game: {total_entered} entered, '
+              f'{total_stayed_out} stayed out')
+
+    # ------------------------------------------------------------------ #
+    #  Phase 2b: Topology Control Game (§3.5)                             #
+    # ------------------------------------------------------------------ #
+
+    def _neighbor_energy(self, sensor: Sensor,
+                         active_ids: set[int] | None = None) -> float:
         """Ē_i(p_i) = avg [E_r(j)/E_0(j)] over alive 1-hop neighbours."""
         nbs = [nb for nb in sensor.neighbors if nb.is_alive and nb.e0 > 0]
+        if active_ids is not None:
+            nbs = [nb for nb in nbs if nb.id in active_ids]
         if not nbs:
             return 0.0
         return sum(nb.e_res / nb.e0 for nb in nbs) / len(nbs)
 
-    def _utility(self, sensor: Sensor, f_k: float) -> float:
+    def _utility(self, sensor: Sensor, f_k: float,
+                 active_ids: set[int] | None = None) -> float:
         """u_i = f_k · (α_i · (p_max − p_i)/p_max + β_i · Ē_i)."""
         net = self.net
         alpha_i = 1.0 - (sensor.e_res / sensor.e0) if sensor.e0 > 0 else 1.0
         beta_i = 1.0 - alpha_i
         power_saving = (net.p_max - sensor.power) / net.p_max
-        return f_k * (alpha_i * power_saving + beta_i * self._neighbor_energy(sensor))
+        return f_k * (alpha_i * power_saving
+                      + beta_i * self._neighbor_energy(sensor, active_ids))
 
     def _cluster_digraph(self, members: list[Sensor]) -> nx.DiGraph:
         """Directed cluster subgraph over member ids, including the CH."""
@@ -313,13 +389,15 @@ class EETCM(BaseAlgorithm):
         # dense cluster processed first would otherwise starve later ones.
         total_steps = 0
         for ch_id, members in clusters.items():
-            if len(members) < 2:
+            active = [s for s in members if s.is_ch or s._entered]
+            if len(active) < 2:
                 continue
+            active_ids = {s.id for s in active}
             cluster_steps = 0
             converged = False
             while not converged and cluster_steps < self._max_adapt_iter:
                 converged = True
-                for sensor in members:
+                for sensor in active:
                     if sensor.is_ch:
                         continue  # CH stays at p_max for intra-cluster reach
                     if not sensor.is_alive or sensor.power <= net.p_min:
@@ -332,7 +410,8 @@ class EETCM(BaseAlgorithm):
                     new_rc = net.calc_comm_range(new_power)
 
                     links_lost = [nb for nb in sensor.neighbors
-                                  if sensor.distance_to(nb) > new_rc]
+                                  if nb.id in active_ids
+                                  and sensor.distance_to(nb) > new_rc]
 
                     if not links_lost:
                         alpha_i = (1.0 - sensor.e_res / sensor.e0
@@ -345,8 +424,9 @@ class EETCM(BaseAlgorithm):
                         total_steps += 1
                         continue
 
-                    D_cur = self._cluster_digraph(members)
-                    old_util = self._utility(sensor, self._f_k(D_cur))
+                    D_cur = self._cluster_digraph(active)
+                    old_util = self._utility(sensor, self._f_k(D_cur),
+                                             active_ids)
 
                     for nb in links_lost:
                         sensor.remove_neighbor(nb)
@@ -354,8 +434,9 @@ class EETCM(BaseAlgorithm):
                     old_power, old_rc = sensor.power, sensor.rc
                     sensor.power, sensor.rc = new_power, new_rc
 
-                    D_trial = self._cluster_digraph(members)
-                    new_util = self._utility(sensor, self._f_k(D_trial))
+                    D_trial = self._cluster_digraph(active)
+                    new_util = self._utility(sensor, self._f_k(D_trial),
+                                             active_ids)
 
                     if new_util > old_util:
                         converged = False
@@ -396,10 +477,12 @@ class EETCM(BaseAlgorithm):
                           if compression_enabled else 1.0)
         cm_overhead = self._compression_overhead if compression_enabled else 0.0
 
+        charged_chs: set[int] = set()
         for ch_pos, layers in layered_batches.items():
             ch = net.sensor_by_pos(tuple(float(x) for x in ch_pos))
             if ch is None or not ch.is_alive:
                 continue
+            charged_chs.add(ch.id)
 
             depth = len(layers)
             # CH: reception + aggregation only (tx charged per-hop below).
@@ -416,6 +499,8 @@ class EETCM(BaseAlgorithm):
                         s = net.sensor_by_pos(
                             tuple(float(x) for x in node_pos))
                         if s is None or not s.is_alive:
+                            continue
+                        if not s._entered:
                             continue
                         cost = net.calc_node_cost(
                             s, 'CM', clustering=False,
@@ -438,3 +523,24 @@ class EETCM(BaseAlgorithm):
             ch.e_res -= tx
             if ch.e_res <= 0:
                 self._track_death(ch)
+
+        # Lone CHs absent from layered_batches (no cluster members / no edges)
+        for s in net.sensors:
+            if not s.is_alive or not s.is_ch or s.id in charged_chs:
+                continue
+            s.c_ch = net.m_pkt_l * (net.e_elec + net.e_agg)
+            s.e_res -= s.c_ch
+            d = math.hypot(s.x, s.y)
+            tx = net.calc_tx_cost(d, 'CH')
+            s.e_res -= tx
+            if s.e_res <= 0:
+                self._track_death(s)
+
+        # Unaffiliated alive nodes still consume energy
+        for s in net.sensors:
+            if not s.is_alive or s.is_ch or s.ch_belong is not None:
+                continue
+            s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
+            s.e_res -= s.c_cm
+            if s.e_res <= 0:
+                self._track_death(s)

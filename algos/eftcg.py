@@ -65,7 +65,7 @@ class EFTCG(BaseAlgorithm):
         """Execute one simulation round. Returns False when network is dead."""
         net = self.net
 
-        # Re-adapt if topology changed (node died or first round)
+        # Re-adapt if topology changed (node died) or energy state shifted
         if self._needs_adapt:
             self._initialize_topology()
             self._adapt()
@@ -77,6 +77,10 @@ class EFTCG(BaseAlgorithm):
 
         # Maintenance: energy deduction
         self._maintenance()
+
+        # After first maintenance, α_i becomes non-zero — re-adapt next round
+        if self.t == 0:
+            self._needs_adapt = True
 
         print(f'EFTCG-{self.k} Round {self.t}: '
               f'Dead={self.dead_nodes}/{net.num_nodes}')

@@ -550,6 +550,9 @@ class FLLEACHPSO(BaseAlgorithm):
                 s.power = net.p_max / 4
                 s.rc = net.calc_comm_range(s.power)
 
+        # Neighbour discovery (needed for range-checked cluster formation)
+        net.discover_neighbors()
+
         # PCH selection (fuzzy logic)
         self._select_pch()
 
@@ -560,8 +563,11 @@ class FLLEACHPSO(BaseAlgorithm):
               f'PCHs={len(self._pchs)}, SCHs={len(self._schs)}, '
               f'Dead={self.dead_nodes}/{net.num_nodes}')
 
-        # Build cluster edges
-        self._build_cluster_edges()
+        # Cluster formation with range checks
+        self._cluster_formation()
+        self._filter_neighbours()
+        self._connect_unaffiliated()
+        self._cleanup_cross_cluster_edges()
 
         if self.t % self.plot_period == 0:
             directional_wsn_plot(net.to_network_dict(), net.to_node_dict())
@@ -575,50 +581,120 @@ class FLLEACHPSO(BaseAlgorithm):
         return True
 
     # ------------------------------------------------------------------ #
-    #  Edge building                                                       #
+    #  Cluster formation (range-checked, same pattern as LEACH/GTFR)       #
     # ------------------------------------------------------------------ #
 
-    def _build_cluster_edges(self) -> None:
-        """Create directed edges representing the two-tier hierarchy.
-
-        Convention: CH -> member edges for plotting (same as LEACH/GTFR).
-        """
+    def _cluster_formation(self):
+        """CHs (PCH + SCH) advertise at max power; CMs within range join nearest CH."""
         net = self.net
 
-        for cid, members in self._clusters.items():
-            pch = self._pchs.get(cid)
-            if pch is None:
+        for ch in net.sensors:
+            if not ch.is_alive or not ch.is_ch:
                 continue
 
-            sch = self._schs.get(cid)
-            alive = [s for s in members if s.is_alive]
+            ch.power = net.p_max
+            ch.rc = net.calc_comm_range(net.p_max)
+            ch.c_ch = net.calc_node_cost(ch, 'CH', clustering=False)
 
-            # PCH at max power
-            pch.power = net.p_max
-            pch.rc = net.calc_comm_range(net.p_max)
+            for s in net.sensors:
+                if s is ch or not s.is_alive:
+                    continue
+                if ch.distance_to(s) > ch.rc:
+                    continue
 
-            if sch is not None:
-                # SCH at max power
-                sch.power = net.p_max
-                sch.rc = net.calc_comm_range(net.p_max)
-                sch.ch_belong = pch
+                if s.is_ch:
+                    if s not in ch.ch_neighbors:
+                        ch.ch_neighbors.append(s)
+                        net.edges[ch.id, s.id] = 1
+                else:
+                    if s.ch_belong is None:
+                        s.ch_belong = ch
+                        net.edges[ch.id, s.id] = 1
+                        ch.add_neighbor(s)
+                    else:
+                        if s.distance_to(s.ch_belong) > s.distance_to(ch):
+                            old_ch = s.ch_belong
+                            old_ch.remove_neighbor(s)
+                            net.edges[old_ch.id, s.id] = 0
+                            s.ch_belong = ch
+                            ch.add_neighbor(s)
+                            net.edges[ch.id, s.id] = 1
 
-                # Edge: PCH -> SCH
-                net.connect(pch, sch)
-
-                # Edges: SCH -> CMs
-                for s in alive:
-                    if s is pch or s is sch:
-                        continue
-                    s.ch_belong = pch
-                    net.connect(sch, s)
+    def _filter_neighbours(self):
+        """Remove edges between nodes in different clusters."""
+        net = self.net
+        for s in net.sensors:
+            if not s.is_alive:
+                continue
+            if s.is_ch:
+                for nb in s.neighbors[:]:
+                    if nb.is_ch:
+                        s.remove_neighbor(nb)
+                    elif nb.ch_belong is not s:
+                        net.disconnect(s, nb)
+            elif s.ch_belong is not None:
+                for nb in s.neighbors[:]:
+                    if nb.is_ch:
+                        if nb is not s.ch_belong:
+                            net.disconnect(s, nb)
+                    elif nb.ch_belong is not s.ch_belong:
+                        net.disconnect(s, nb)
             else:
-                # No SCH: PCH directly connects to CMs
-                for s in alive:
-                    if s is pch:
+                for nb in s.neighbors[:]:
+                    net.disconnect(s, nb)
+
+    def _connect_unaffiliated(self):
+        """Unaffiliated nodes raise power to reach a cluster."""
+        net = self.net
+        extended = 0
+        connectivity = True
+        while extended == 0 and connectivity:
+            extended = 1
+            for s in net.sensors:
+                if not s.is_alive or s.is_ch or s.ch_belong is not None:
+                    continue
+                if s.power == 0:
+                    continue
+                extended = 0
+                final_cm = None
+                neighbors_temp = []
+                for cm in net.sensors:
+                    if cm is s or not cm.is_alive:
                         continue
-                    s.ch_belong = pch
-                    net.connect(pch, s)
+                    if cm.ch_belong is None or cm.is_ch:
+                        continue
+                    if s.distance_to(cm) <= s.rc:
+                        neighbors_temp.append(cm)
+                        if s.ch_belong is None:
+                            s.ch_belong = cm.ch_belong
+                            final_cm = cm
+                        else:
+                            d_old = s.distance_to(s.ch_belong)
+                            d_new = s.distance_to(cm.ch_belong)
+                            if d_old > d_new:
+                                s.ch_belong = cm.ch_belong
+                                final_cm = cm
+                if final_cm is not None:
+                    net.connect(final_cm, s)
+                    neighbors_temp = [nb for nb in neighbors_temp
+                                      if nb.ch_belong is s.ch_belong]
+                    for nb in neighbors_temp:
+                        net.connect(s, nb)
+                else:
+                    s.power += net.p_step
+                    if s.power > net.p_max:
+                        s.power = 0
+                        s.rc = 0
+                        continue
+                    net.update_comm_range(s)
+
+    def _cleanup_cross_cluster_edges(self):
+        net = self.net
+        for s in net.sensors:
+            for nb in s.neighbors[:]:
+                if (s.ch_belong is not None and nb.ch_belong is not None
+                        and s.ch_belong is not nb.ch_belong):
+                    net.disconnect(s, nb)
 
     # ------------------------------------------------------------------ #
     #  Energy deduction                                                    #
@@ -629,7 +705,7 @@ class FLLEACHPSO(BaseAlgorithm):
 
         PCH: CH role, transmits to BS (distance = to origin).
         SCH: CH role, transmits to PCH.
-        CM:  CM role, transmits to SCH (or PCH if no SCH).
+        CM:  CM role, transmits to its ch_belong (whichever CH it joined).
         """
         net = self.net
 
@@ -640,7 +716,7 @@ class FLLEACHPSO(BaseAlgorithm):
             # PCH energy
             if pch is not None and pch.is_alive:
                 saved_rc = pch.rc
-                pch.rc = math.hypot(pch.x, pch.y)  # distance to BS at origin
+                pch.rc = math.hypot(pch.x, pch.y)
                 pch.c_ch = net.calc_node_cost(pch, 'CH', clustering=False)
                 pch.rc = saved_rc
                 pch.e_res -= pch.c_ch
@@ -658,18 +734,17 @@ class FLLEACHPSO(BaseAlgorithm):
                     if sch.e_res <= 0:
                         self._track_death(sch)
 
-            # CM energy: transmit to SCH (or PCH if no SCH)
-            target = sch if (sch is not None and sch.is_alive) else pch
-            if target is None:
+        # CM energy: each node transmits to its actual ch_belong
+        for s in net.sensors:
+            if not s.is_alive or s.is_ch:
                 continue
-
-            for s in members:
-                if not s.is_alive or s is pch or s is sch:
-                    continue
+            if s.ch_belong is not None:
                 saved_rc = s.rc
-                s.rc = s.distance_to(target)
+                s.rc = s.distance_to(s.ch_belong)
                 s.c_cm = net.calc_node_cost(s, 'CM', clustering=False)
                 s.rc = saved_rc
-                s.e_res -= s.c_cm
-                if s.e_res <= 0:
-                    self._track_death(s)
+            else:
+                s.c_cm = net.calc_node_cost(s, 'CM', clustering=False, layer_depth=1)
+            s.e_res -= s.c_cm
+            if s.e_res <= 0:
+                self._track_death(s)
