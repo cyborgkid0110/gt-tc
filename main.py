@@ -22,9 +22,9 @@ from algos.ee_tcm import EETCM
 NUM_NODES = 200
 AREA = 250
 E0 = 0.005                        # initial energy (J)
-P_MIN = 0.01
-P_MAX = 0.08
-P_STEP = 0.001
+P_MIN = 3.0e-5
+P_MAX = 2.5e-4
+P_STEP = 3.0e-6
 HOP_MAX = 3
 
 # radio link-budget parameters (Tudose et al. Eq. 7-8)
@@ -41,8 +41,10 @@ R_BIT = 250e3                    # data rate (bps)
 # energy model
 E_ELEC = 50e-9
 E_AGG = 5e-9
-M_PKT_S = 20
-M_PKT_L = 1000
+# packet structure (application payload only), all in bits
+DATA_PAYLOAD = 32                 # data packet: node id 16 + sensor value 16 (4 B)
+AGG_PAYLOAD = 72                  # agg packet: cluster id 16 + count 8 + mean 16 + min 16 + max 16 (9 B)
+SENSOR_SAMPLE_BITS = 16           # 16-bit ADC sample (sensing/processing)
 
 # simulation
 MAX_ROUNDS = 50000
@@ -84,7 +86,8 @@ def build_network():
                        wave=WAVE, gamma=GAMMA, g_ant=G_ANT, eta=ETA, r_bit=R_BIT,
                        p_min=P_MIN, p_max=P_MAX, p_step=P_STEP,
                        hop_max=HOP_MAX, e_elec=E_ELEC, e_agg=E_AGG,
-                       m_pkt_s=M_PKT_S, m_pkt_l=M_PKT_L)
+                       data_payload=DATA_PAYLOAD, agg_payload=AGG_PAYLOAD,
+                       sensor_sample_bits=SENSOR_SAMPLE_BITS)
     return net
 
 ########################################################################
@@ -133,7 +136,7 @@ if __name__ == '__main__':
                         help='Algorithm to run (default: GT2)')
     args = parser.parse_args()
 
-    algorithm = args.algo or 'EE-TCM'
+    algorithm = args.algo or 'FC-CRA'
 
     net = build_network()
     print("Generated done")

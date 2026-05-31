@@ -96,8 +96,9 @@ class NetworkModel:
         # Energy parameters
         self.e_elec = params.get('e_elec', 50e-9)
         self.e_agg = params.get('e_agg', 5e-9)
-        self.m_pkt_s = params.get('m_pkt_s', 20)
-        self.m_pkt_l = params.get('m_pkt_l', 1000)
+        self.m_pkt_s = params.get('data_payload', 32)            # data packet bits
+        self.m_pkt_l = params.get('agg_payload', 72)             # aggregated packet bits
+        self.sensor_sample_bits = params.get('sensor_sample_bits', 16)
 
         # Game 2 parameters
         self.alpha = params.get('alpha', 1.5)
@@ -150,7 +151,7 @@ class NetworkModel:
         c_tx = self.calc_tx_cost(d, role, layer_depth)
 
         if role == 'CM':
-            m_bit = 8
+            m_bit = self.sensor_sample_bits
             i_sense = random.uniform(1e-8, 5e-7)
             c_sense = sensor.Vpre * i_sense * m_bit
             c_process = sensor.Vpre * m_bit * i_sense / 4
@@ -239,7 +240,7 @@ class NetworkModel:
             if not s.is_alive:
                 continue
 
-            m_bit = 8
+            m_bit = self.sensor_sample_bits
             i_sense = random.uniform(1e-8, 5e-7)
             c_sense = s.Vpre * i_sense * m_bit
             c_process = s.Vpre * m_bit * i_sense / 4
