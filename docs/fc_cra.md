@@ -64,17 +64,57 @@ The energy dispersion coefficient $D_E$ (equation 14) quantifies the relative sp
 
 The energy factor $f_E(i)$ is zero for any node below the median residual energy $E_{th}$, ensuring low-energy nodes are excluded from CH candidacy. The distance factor $f_D(i)$ is zero for nodes within the maximum single-hop distance (MSHD) $d_{max} = 1.2d_0$, preventing nodes very close to the BS (which already enjoy short-distance communication) from forming large clusters that would overload them.
 
+**Energy Dispersion Coefficient $D_E$**:
+
+$$D_E = \frac{\sum_{i \in N_a}(E(i) - E_{ave})^2}{(E_{max} - E_{min})^2 |N_a|}$$
+
+$D_E$ measures how **heterogeneous** the residual energies are across the network. The numerator is the total squared deviation from the mean (sum of squared differences), while the denominator normalises by the maximum possible spread squared times the number of nodes, bounding $D_E \in [0, 1]$.
+
+- When nodes have **similar residual energies** (early network life or after successful balancing), $D_E \approx 0$, and $\beta_i \approx f_D(i)$ — the distance factor dominates. This makes sense: when energy is uniform, node location becomes the primary differentiator for CH suitability.
+- When energies are **highly heterogeneous** (late network life, some nodes nearly dead), $D_E \approx 1$, and $\beta_i \approx f_E(i)/f_{E_{max}}$ — the energy factor dominates. This ensures that only energy-rich nodes form large clusters when resources are scarce.
+
+**Energy Factor $f_E(i)$**
+
+$$f_E(i) = \begin{cases} \frac{E(i)}{E_{th}}, & E(i) \geq E_{th} \\ 0, & E(i) < E_{th} \end{cases}$$
+
+This factor is **zero for any node below the median energy**, acting as a hard gate that prevents low-energy nodes from becoming CHs at all. For nodes above $E_{th}$, $f_E(i)$ scales linearly with residual energy: a node with twice the median energy gets twice the energy factor. Normalised by $f_{E_{max}}$ in $\beta_i$, this becomes a relative score among eligible CH candidates.
+
+**Distance Factor $f_D(i)$**
+
+$$f_D(i) = \begin{cases} 0, & i \in S_1 \\ \frac{1}{2}\left(1- \cos\frac{d_{iBS} - d_{max}}{R_m - d_{max}}\pi \right), & i \in S_2 \end{cases}$$
+
+where $S_1$ is the region within $d_{max}$ of the BS, and $S_2$ is everything beyond.
+
+Nodes in $S_1$ (very close to BS) receive $f_D(i) = 0$, giving them no distance-based boost to cluster radius. This is deliberate: near-BS nodes already face heavy intercluster forwarding load, so they should form small clusters to conserve energy for relay duties. Giving them a large cluster radius would worsen the energy hole.
+
+For nodes in $S_2$, $f_D(i)$ follows a cosine curve that rises smoothly from 0 at $d_{iBS} = d_{max}$ to 1 at $d_{iBS} = R_m$ (the network boundary). This means far-BS nodes get the largest distance-based boost, encouraging them to form larger clusters. The cosine shape ensures a smooth, gradual transition rather than an abrupt step, avoiding instability near the boundary between $S_1$ and $S_2$.
+
 **Datum cluster radius** $R_0$:
 
-$$R_0 = \sqrt{\frac{R_m^2 E_{th}}{|N_a|PE_0}}$$
+$$R_0 = \sqrt{\frac{R_m^2 E_{th}}{|N_a| P E_0}}$$
 
-As the network energy declines, $E_{th}$ decreases and $|N_a|$ decreases, causing $R_0$ to shrink automatically — the algorithm contracts cluster sizes in response to network degradation.
+This is the **network-wide baseline** radius — a single value shared by all nodes at a given round. It answers the question: *given the current network state, what is the "average" appropriate cluster radius?*
+
+Each term plays a specific role:
+
+- $R_m$ is the radius of the entire monitoring area. $R_m^2$ appears because cluster area scales with the square of radius — the formula is essentially normalising cluster area relative to monitoring area.
+- $P$ is the target fraction of nodes that should become CHs (e.g., $P = 0.05$ means 5% of nodes are CHs). The expected number of clusters is $P \cdot |N_a|$, and each cluster should cover $1/(P \cdot |N_a|)$ of the total area.
+- $E_{th}$ is the **median** residual energy of all alive nodes $N_a$. As the network ages and nodes lose energy, $E_{th}$ falls, causing $R_0$ to shrink. This is the mechanism by which the algorithm **automatically contracts cluster sizes** as the network degrades — fewer alive nodes and lower median energy both reduce $R_0$.
+- $E_0$ is the initial node energy, used to normalise $E_{th}$ into a dimensionless ratio.
+
+Intuitively, $R_0$ shrinks over time as $E_{th} \downarrow$ and $|N_a| \downarrow$, reflecting the fact that a degraded network should form smaller, more manageable clusters.
 
 **Local density correction** $\alpha_i$:
 
-$$\alpha_i = \sqrt{\frac{1}{PN_0(i)}}$$
+$$\alpha_i = \sqrt{\frac{1}{P N_0(i)}}$$
 
-where $N_0(i)$ is the node count within radius $R_0$ centred at node $i$. This prevents anomalously large or small clusters in locally dense or sparse regions.
+where $N_0(i)$ is the number of alive nodes within radius $R_0$ centred at node $i$.
+
+$R_0$ is a network-average quantity and does not account for **local node density**. In a region where nodes are densely packed, using $R_0$ as the cluster radius would create enormous clusters with too many members, placing excessive processing and aggregation load on the CH. In a sparse region, it might not capture enough nodes to justify the overhead of forming a cluster at all.
+
+$\alpha_i$ corrects for this. The expected number of nodes in a circle of radius $R_0$ under uniform distribution is approximately $P N_0(i)$ clusters worth of nodes. If $N_0(i)$ is large (dense region), $\alpha_i < 1$ and $R_0$ is scaled down, shrinking the cluster. If $N_0(i)$ is small (sparse region), $\alpha_i > 1$ and $R_0$ is scaled up, expanding the cluster to capture enough members. The square root keeps the correction proportional to radius rather than area.
+
+The combined base radius $\alpha_i R_0$ therefore represents the **locally-corrected baseline** before any energy or distance consideration.
 
 **CH selection** is an iterative process. In each iteration, the node with the highest cluster head competition coefficient (CHCC) $\partial_i = |h_i|$ (cardinality of its neighbor set within $R(i)$) that exceeds the average threshold $\partial_{th}$ is selected as a CH and forms a cluster. Marked (clustered) nodes are removed from subsequent iterations. Any remaining unclustered nodes after all iterations join their nearest cluster.
 

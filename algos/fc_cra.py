@@ -134,21 +134,28 @@ class FCCRA(BaseAlgorithm):
         # --- E_th = median residual energy --------------------------
         e_th = float(np.median(e_res))
         e_max = float(e_res.max())
+        e_min = float(e_res.min())
         e_mean = float(e_res.mean())
-        e_std = float(e_res.std())
-        D_E = min(1.0, e_std / e_mean) if e_mean > 0 else 0.0
 
-        # --- f_E: zero below median, scaled to [0,1] above ----------
-        if e_max > e_th:
-            f_E = np.clip((e_res - e_th) / (e_max - e_th), 0.0, 1.0)
+        # --- D_E (eq. 14): energy dispersion coefficient -------------
+        # total squared deviation from the mean, normalised by
+        # (E_max − E_min)² · |N_a|.
+        e_rng = e_max - e_min
+        D_E = (float(np.sum((e_res - e_mean) ** 2)) / (e_rng ** 2 * n_alive)
+               if e_rng > 0 else 0.0)
+
+        # --- f_E (eq. 5): E(i)/E_th above the median gate, else 0 ----
+        if e_th > 0:
+            f_E = np.where(e_res >= e_th, e_res / e_th, 0.0)
         else:
             f_E = np.zeros_like(e_res)
         f_E_max = float(f_E.max()) if f_E.max() > 0 else 1.0
 
-        # --- f_D: zero within d_max, scaled to [0,1] outside --------
+        # --- f_D (eq. 6): 0 within d_max; raised-cosine 0→1 outside --
         d_bs = np.array([math.hypot(s.x, s.y) for s in alive], dtype=float)
         denom = max(self._R_m - self._d_max, 1e-9)
-        f_D = np.clip((d_bs - self._d_max) / denom, 0.0, 1.0)
+        ramp = np.clip((d_bs - self._d_max) / denom, 0.0, 1.0)
+        f_D = 0.5 * (1.0 - np.cos(ramp * np.pi))
 
         # --- β_i ----------------------------------------------------
         beta = D_E * (f_E / f_E_max) + (1.0 - D_E) * f_D
