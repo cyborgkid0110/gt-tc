@@ -1,8 +1,7 @@
 import argparse
-import random
 import numpy as np
-from scipy.stats import qmc
 
+from deployment import generate_positions, REGISTRY
 from model import Sensor, NetworkModel
 from algos.gt2 import GT2
 from algos.leach import LEACH
@@ -59,27 +58,23 @@ ALGO_CHOICES = [
 # NODE GENERATION
 ########################################################################
 
-def build_network():
-    seed = 42
-    rng = np.random.default_rng(seed)
-    engine = qmc.PoissonDisk(d=2, radius=30, rng=rng, ncandidates=NUM_NODES,
-                             l_bounds=0, u_bounds=AREA * 2)
-    sample = engine.random(NUM_NODES)
+def build_network(deployment='poisson', num_nodes=NUM_NODES, seed=42):
+    """Build a NetworkModel for the given deployment scenario.
 
-    not_generated = NUM_NODES - len(sample)
-    random.seed(seed)
-    while not_generated > 0:
-        row = np.round(np.random.rand(1, 2) * AREA * 2, 2)
-        sample = np.append(sample, row, axis=0)
-        not_generated -= 1
+    A run is reproducible from (deployment, num_nodes, seed): a single RNG seeds
+    both node positions and per-node Vpre. Coordinates land in [-AREA, AREA]^2
+    with the base station at the origin.
+    """
+    rng = np.random.default_rng(seed)
+    positions = generate_positions(deployment, num_nodes, AREA, rng)
 
     sensors = []
-    for i in range(len(sample)):
-        x = float(sample[i, 0] - AREA)
-        y = float(sample[i, 1] - AREA)
+    for i in range(len(positions)):
+        x = float(positions[i, 0])
+        y = float(positions[i, 1])
         sensors.append(Sensor(id=i, x=x, y=y, e0=E0,
                               power=P_MAX / 4,
-                              Vpre=random.uniform(2.7, 4.2)))
+                              Vpre=float(rng.uniform(2.7, 4.2))))
 
     net = NetworkModel(sensors, AREA,
                        snr=SNR, nf_rx=NF_RX, n0=N0, bw=BW,
@@ -134,12 +129,20 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='WSN topology-control benchmark')
     parser.add_argument('--algo', type=str, default=None, choices=ALGO_CHOICES,
                         help='Algorithm to run (default: GT2)')
+    parser.add_argument('--deployment', type=str, default='poisson',
+                        choices=list(REGISTRY),
+                        help='Node deployment scenario (default: poisson)')
+    parser.add_argument('--num-nodes', type=int, default=NUM_NODES,
+                        help=f'Number of nodes (default: {NUM_NODES})')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='RNG seed for the deployment (default: 42)')
     args = parser.parse_args()
 
     algorithm = args.algo or 'FC-CRA'
 
-    net = build_network()
-    print("Generated done")
+    net = build_network(args.deployment, args.num_nodes, args.seed)
+    print(f"Generated done [deployment={args.deployment}, "
+          f"num_nodes={args.num_nodes}, seed={args.seed}]")
     print("Possible connectivity:", net.check_potential_connectivity())
 
     sim_kwargs = dict(max_rounds=MAX_ROUNDS, plot_period=PLOT_PERIOD)
