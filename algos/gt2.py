@@ -18,6 +18,7 @@ import graph
 
 class GT2(BaseAlgorithm):
     """Game-Theoretic Topology Control (two-stage) algorithm."""
+    family = 'clustering'
 
     def __init__(self, net: NetworkModel, config_path: str = 'config/gt2.yaml', **kwargs):
         super().__init__(net, config_path, **kwargs)
@@ -136,11 +137,16 @@ class GT2(BaseAlgorithm):
             s.c_ch = c_ch
             s.c_cm = c_cm
 
-            if c_ch - c_cm < 0:
-                p0 = 1
+            # ensure it stays a real number in [0, 1]
+            numer = c_ch - c_cm
+            denom = self.payoff - c_cm
+            if denom <= 0:
+                p0 = 0.0
+            elif numer < 0:
+                p0 = 1.0
             else:
-                p0 = 1 - pow((c_ch - c_cm) / (self.payoff - c_cm),
-                             1 / len(s.neighbors))
+                base = numer / denom
+                p0 = 0.0 if base >= 1 else 1 - base ** (1 / len(s.neighbors))
             s.p0 = p0
 
             if random.random() < p0:
@@ -362,7 +368,7 @@ class GT2(BaseAlgorithm):
                 continue
             if s.is_ch:
                 info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
                 s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
                           + net.calc_tx_cost(tx_dist, 'CH'))
                 s.e_res -= s.c_ch

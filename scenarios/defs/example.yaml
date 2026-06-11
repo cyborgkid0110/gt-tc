@@ -1,0 +1,10 @@
+# scenarios/defs/example.yaml — a deployment around a central square obstacle
+name: example
+area: 250
+num_nodes: 60
+coverage_radius: 60
+seed: 7
+bs: [0.0, 0.0]
+# obstacles:
+#   - [[-60, -60], [60, -60], [60, 60], [-60, 60]]
+paths: []

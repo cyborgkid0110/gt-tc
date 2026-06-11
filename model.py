@@ -69,6 +69,9 @@ class NetworkModel:
         self.sensors = sensors
         self.num_nodes = len(sensors)
         self.area = area
+        bs_pos = params.get('bs_pos', (0.0, 0.0))
+        self.bs_x = float(bs_pos[0])
+        self.bs_y = float(bs_pos[1])
         self.edges = np.zeros((self.num_nodes, self.num_nodes), dtype=int)
 
         self._pos_map = {s.pos: s for s in sensors}
@@ -99,6 +102,8 @@ class NetworkModel:
         self.m_pkt_s = params.get('data_payload', 32)            # data packet bits
         self.m_pkt_l = params.get('agg_payload', 72)             # aggregated packet bits
         self.sensor_sample_bits = params.get('sensor_sample_bits', 16)
+        # deterministic sensing current (A) [1e-8, 5e-7]
+        self.i_sense = params.get('i_sense', 2.55e-7)
 
         # Game 2 parameters
         self.alpha = params.get('alpha', 1.5)
@@ -111,6 +116,10 @@ class NetworkModel:
     def sensor_by_pos(self, pos):
         """Look up a sensor by its position tuple."""
         return self._pos_map.get(pos)
+
+    def dist_to_bs(self, sensor):
+        """Euclidean distance from a sensor to the base station."""
+        return math.hypot(sensor.x - self.bs_x, sensor.y - self.bs_y)
 
     # ------------------------------------------------------------------ #
     #  Communication range (Friis free-space model)                       #
@@ -142,24 +151,40 @@ class NetworkModel:
         When *clustering* is True the distance is measured to the sink
         (origin).  Otherwise the sensor's current communication range
         is used as the reference distance.
+
+        **Main Idea:** Sensing and processing costs are 
+        applied to both CH and CM roles
+        * Every node samples and processes its own data
+        * Including baseline costs in both roles cancels 
+        them out in the $c_{ch} - c_{cm}$ comparison.
+        * Without this cancellation, the CM role carried 
+        an extra sensing burden, making $c_{cm} > c_{ch}$ 
+        almost always and breaking the game by forcing a 
+        100% volunteer probability ($p_0 = 1$).
+        * The actual energy drain path is unaffected; a 
+        CH's functional cost remains receiving, aggregating, 
+        and transmitting data.
         """
         if clustering:
-            d = math.hypot(sensor.x, sensor.y)
+            d = self.dist_to_bs(sensor)
         else:
             d = sensor.rc
 
         c_tx = self.calc_tx_cost(d, role, layer_depth)
 
+        m_bit = self.sensor_sample_bits
+        c_sense = sensor.Vpre * self.i_sense * m_bit
+        c_process = sensor.Vpre * m_bit * self.i_sense / 4
+
         if role == 'CM':
-            m_bit = self.sensor_sample_bits
-            i_sense = random.uniform(1e-8, 5e-7)
-            c_sense = sensor.Vpre * i_sense * m_bit
-            c_process = sensor.Vpre * m_bit * i_sense / 4
             return c_sense + c_process + c_tx
         else:   # CH
             c_rx = self.m_pkt_l * self.e_elec
             c_agg = self.m_pkt_l * self.e_agg
-            return c_rx + c_agg + c_tx
+            cost = c_rx + c_agg + c_tx
+            if clustering:
+                cost += c_sense + c_process
+            return cost
 
     # ------------------------------------------------------------------ #
     #  Routing-based maintenance energy model                             #
@@ -180,7 +205,7 @@ class NetworkModel:
         for s in self.sensors:
             if not s.is_alive:
                 continue
-            if math.hypot(s.x, s.y) <= s.rc:
+            if self.dist_to_bs(s) <= s.rc:
                 gateways.append(s.id)
 
         rev_adj = [[] for _ in range(self.num_nodes)]
@@ -218,7 +243,7 @@ class NetworkModel:
             s = self.sensors[nid]
             pid = parent[nid]
             if pid is None:
-                tx_d = math.hypot(s.x, s.y)
+                tx_d = self.dist_to_bs(s)
             else:
                 tx_d = s.distance_to(self.sensors[pid])
             tree[nid] = {
@@ -358,17 +383,35 @@ class NetworkModel:
                 self.edges[si.id, sj.id] = local_net['edges'][i, j]
 
     def check_potential_connectivity(self):
-        """Can every node pair potentially connect at maximum power?"""
+        """True iff the network is a single connected component at maximum power.
+
+        At ``p_max`` every node shares the same range ``calc_comm_range(p_max)``
+        and the adjacency is symmetric (distance is symmetric), so this is the
+        densest topology any algorithm could ever realise. If the network is not
+        connected here, no power-control or clustering scheme can connect it —
+        the deployment is infeasible. (This is stronger than merely checking for
+        isolated nodes: it rejects layouts that split into separate components.)
+        """
+        n = self.num_nodes
+        if n <= 1:
+            return True
         max_rc = self.calc_comm_range(self.p_max)
-        connected = set()
-        for i, si in enumerate(self.sensors):
-            for j, sj in enumerate(self.sensors):
-                if i >= j:
-                    continue
-                if si.distance_to(sj) <= max_rc:
-                    connected.add(i)
-                    connected.add(j)
-        return len(connected) == self.num_nodes
+        coords = np.array([[s.x, s.y] for s in self.sensors], dtype=float)
+        # BFS from node 0 over the max-power adjacency (each node expanded once).
+        seen = np.zeros(n, dtype=bool)
+        seen[0] = True
+        frontier = [0]
+        while frontier:
+            i = frontier.pop()
+            d = np.hypot(coords[:, 0] - coords[i, 0], coords[:, 1] - coords[i, 1])
+            nbrs = np.nonzero((d <= max_rc) & ~seen)[0]
+            seen[nbrs] = True
+            frontier.extend(nbrs.tolist())
+        if not seen.all():
+            return False
+        # At least one node must reach the BS at max power.
+        d_bs = np.hypot(coords[:, 0] - self.bs_x, coords[:, 1] - self.bs_y)
+        return bool(np.any(d_bs <= max_rc))
 
     # ------------------------------------------------------------------ #
     #  Edge / neighbour management                                        #

@@ -3,6 +3,7 @@ import numpy as np
 
 from deployment import generate_positions, REGISTRY
 from model import Sensor, NetworkModel
+from scenarios import load_scenario
 from algos.gt2 import GT2
 from algos.leach import LEACH
 from algos.gtfr import GTFR
@@ -48,6 +49,7 @@ SENSOR_SAMPLE_BITS = 16           # 16-bit ADC sample (sensing/processing)
 # simulation
 MAX_ROUNDS = 50000
 PLOT_PERIOD = 100
+MAX_RESAMPLES = 50                # feasibility resample cap (see build_network)
 
 ALGO_CHOICES = [
     'GT2', 'LEACH', 'GTFR', 'DIA', 'MIA', 'TCLE',
@@ -58,32 +60,76 @@ ALGO_CHOICES = [
 # NODE GENERATION
 ########################################################################
 
-def build_network(deployment='poisson', num_nodes=NUM_NODES, seed=42):
+def build_network(deployment='poisson', num_nodes=NUM_NODES, seed=42,
+                  max_resamples=MAX_RESAMPLES, scenario=None):
     """Build a NetworkModel for the given deployment scenario.
 
     A run is reproducible from (deployment, num_nodes, seed): a single RNG seeds
     both node positions and per-node Vpre. Coordinates land in [-AREA, AREA]^2
     with the base station at the origin.
+
+    Each candidate layout is checked for connectivity feasibility at maximum
+    transmission power (every node at p_max — the densest topology any algorithm
+    could realise). A layout that is disconnected even then is infeasible, so its
+    positions are resampled — advancing the same RNG, so the result stays
+    deterministic for a given (deployment, num_nodes, seed) — until feasible, up
+    to ``max_resamples`` attempts. Exhausting the cap raises RuntimeError rather
+    than returning a network no algorithm could ever connect.
+
+    When ``scenario`` (path to a frozen scenario CSV) is given, positions,
+    per-node Vpre, and the base-station position are loaded from disk and
+    generation is skipped; otherwise behavior is unchanged.
     """
+    if scenario is not None:
+        positions, vpre, bs_pos, meta = load_scenario(scenario)
+        sensors = []
+        for i in range(len(positions)):
+            sensors.append(Sensor(id=i, x=float(positions[i, 0]),
+                                  y=float(positions[i, 1]), e0=E0,
+                                  power=P_MAX / 4, Vpre=float(vpre[i])))
+        net = NetworkModel(sensors, AREA,
+                           snr=SNR, nf_rx=NF_RX, n0=N0, bw=BW,
+                           wave=WAVE, gamma=GAMMA, g_ant=G_ANT, eta=ETA, r_bit=R_BIT,
+                           p_min=P_MIN, p_max=P_MAX, p_step=P_STEP,
+                           hop_max=HOP_MAX, e_elec=E_ELEC, e_agg=E_AGG,
+                           data_payload=DATA_PAYLOAD, agg_payload=AGG_PAYLOAD,
+                           sensor_sample_bits=SENSOR_SAMPLE_BITS,
+                           bs_pos=bs_pos)
+        if not net.check_potential_connectivity():
+            raise RuntimeError(f"Frozen scenario {scenario} is not connectable.")
+        return net
+
     rng = np.random.default_rng(seed)
-    positions = generate_positions(deployment, num_nodes, AREA, rng)
+    for attempt in range(1, max_resamples + 1):
+        positions = generate_positions(deployment, num_nodes, AREA, rng)
 
-    sensors = []
-    for i in range(len(positions)):
-        x = float(positions[i, 0])
-        y = float(positions[i, 1])
-        sensors.append(Sensor(id=i, x=x, y=y, e0=E0,
-                              power=P_MAX / 4,
-                              Vpre=float(rng.uniform(2.7, 4.2))))
+        sensors = []
+        for i in range(len(positions)):
+            x = float(positions[i, 0])
+            y = float(positions[i, 1])
+            sensors.append(Sensor(id=i, x=x, y=y, e0=E0,
+                                  power=P_MAX / 4,
+                                  Vpre=float(rng.uniform(2.7, 4.2))))
 
-    net = NetworkModel(sensors, AREA,
-                       snr=SNR, nf_rx=NF_RX, n0=N0, bw=BW,
-                       wave=WAVE, gamma=GAMMA, g_ant=G_ANT, eta=ETA, r_bit=R_BIT,
-                       p_min=P_MIN, p_max=P_MAX, p_step=P_STEP,
-                       hop_max=HOP_MAX, e_elec=E_ELEC, e_agg=E_AGG,
-                       data_payload=DATA_PAYLOAD, agg_payload=AGG_PAYLOAD,
-                       sensor_sample_bits=SENSOR_SAMPLE_BITS)
-    return net
+        net = NetworkModel(sensors, AREA,
+                           snr=SNR, nf_rx=NF_RX, n0=N0, bw=BW,
+                           wave=WAVE, gamma=GAMMA, g_ant=G_ANT, eta=ETA, r_bit=R_BIT,
+                           p_min=P_MIN, p_max=P_MAX, p_step=P_STEP,
+                           hop_max=HOP_MAX, e_elec=E_ELEC, e_agg=E_AGG,
+                           data_payload=DATA_PAYLOAD, agg_payload=AGG_PAYLOAD,
+                           sensor_sample_bits=SENSOR_SAMPLE_BITS,
+                           bs_pos=(0.0, 0.0))
+
+        if net.check_potential_connectivity():
+            if attempt > 1:
+                print(f"[deploy] {deployment} (N={num_nodes}, seed={seed}) "
+                      f"feasible after {attempt} attempt(s)")
+            return net
+
+    raise RuntimeError(
+        f"No connected {deployment} deployment for (N={num_nodes}, seed={seed}) "
+        f"at maximum power within {max_resamples} attempts — increase "
+        f"max_resamples or relax the topology (area / power / min-spacing).")
 
 ########################################################################
 # ALGORITHM INSTANTIATION
@@ -136,13 +182,20 @@ if __name__ == '__main__':
                         help=f'Number of nodes (default: {NUM_NODES})')
     parser.add_argument('--seed', type=int, default=42,
                         help='RNG seed for the deployment (default: 42)')
+    parser.add_argument('--scenario', type=str, default=None,
+                        help='Path to a frozen scenario CSV (overrides '
+                             '--deployment/--num-nodes/--seed)')
     args = parser.parse_args()
 
-    algorithm = args.algo or 'FC-CRA'
+    algorithm = args.algo or 'EE-TCM'
 
-    net = build_network(args.deployment, args.num_nodes, args.seed)
-    print(f"Generated done [deployment={args.deployment}, "
-          f"num_nodes={args.num_nodes}, seed={args.seed}]")
+    if args.scenario:
+        net = build_network(scenario=args.scenario)
+        print(f"Loaded scenario from {args.scenario}")
+    else:
+        net = build_network(args.deployment, args.num_nodes, args.seed)
+        print(f"Generated done [deployment={args.deployment}, "
+              f"num_nodes={args.num_nodes}, seed={args.seed}]")
     print("Possible connectivity:", net.check_potential_connectivity())
 
     sim_kwargs = dict(max_rounds=MAX_ROUNDS, plot_period=PLOT_PERIOD)

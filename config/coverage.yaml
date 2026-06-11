@@ -1,0 +1,8 @@
+# config/coverage.yaml — projected-PSO coverage placement knobs
+pso_particles: 30
+pso_iters: 3000
+pso_w: 0.7          # inertia
+pso_c1: 1.5         # cognitive
+pso_c2: 1.5         # social
+penalty_lambda: 2.0 # weight on disconnected-fraction in fitness
+target_spacing: 15  # coverage-target grid spacing (m)

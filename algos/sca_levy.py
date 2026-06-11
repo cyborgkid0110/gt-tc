@@ -37,6 +37,7 @@ import graph
 
 class SCALEVY(BaseAlgorithm):
     """SCA-Lévy clustering routing algorithm."""
+    family = 'clustering'
 
     def __init__(self, net: NetworkModel, config_path: str = 'config/sca_levy.yaml', **kwargs):
         super().__init__(net, config_path, **kwargs)
@@ -446,7 +447,7 @@ class SCALEVY(BaseAlgorithm):
             return routes
 
         def d_bs(s: Sensor) -> float:
-            return math.hypot(s.x, s.y)
+            return self.net.dist_to_bs(s)
 
         # Adjacency: monotone progress toward BS via existing ch_neighbors
         adj: dict[int, list[Sensor]] = {c.id: [] for c in alive_chs}
@@ -494,7 +495,7 @@ class SCALEVY(BaseAlgorithm):
                 continue
             if s.is_ch:
                 info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
                 s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
                           + net.calc_tx_cost(tx_dist, 'CH'))
                 s.e_res -= s.c_ch
@@ -526,7 +527,7 @@ class SCALEVY(BaseAlgorithm):
         network topology. Kept here per PLAN.md as a reference.
         """
         net = self.net
-        d_ch_bs = math.hypot(ch.x, ch.y)
+        d_ch_bs = net.dist_to_bs(ch)
         if d_ch_bs == 0.0:
             return None
         thresh = d_ch_bs / math.sqrt(2.0)
@@ -538,7 +539,7 @@ class SCALEVY(BaseAlgorithm):
             if s is ch or not s.is_alive or s.is_ch:
                 continue
             d_ch_r = ch.distance_to(s)
-            d_r_bs = math.hypot(s.x, s.y)
+            d_r_bs = net.dist_to_bs(s)
             if d_ch_r >= thresh or d_r_bs >= thresh:
                 continue
             d_sum2 = d_ch_r ** 2 + d_r_bs ** 2

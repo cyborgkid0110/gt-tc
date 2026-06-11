@@ -41,6 +41,7 @@ from plot import directional_wsn_plot, tx_power_plot
 
 class DIAMIA(BaseAlgorithm):
     """DIA / MIA Topology Control Game algorithm."""
+    family = 'topology'
 
     def __init__(self, net: NetworkModel, config_path: str = 'config/dia_mia.yaml', **kwargs):
         super().__init__(net, config_path, **kwargs)

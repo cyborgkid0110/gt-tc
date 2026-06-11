@@ -49,6 +49,7 @@ import graph
 
 class FCCRA(BaseAlgorithm):
     """FC-CRA clustering + multi-hop routing algorithm."""
+    family = 'clustering'
 
     def __init__(self, net: NetworkModel, config_path: str = 'config/fc_cra.yaml', **kwargs):
         super().__init__(net, config_path, **kwargs)
@@ -152,7 +153,7 @@ class FCCRA(BaseAlgorithm):
         f_E_max = float(f_E.max()) if f_E.max() > 0 else 1.0
 
         # --- f_D (eq. 6): 0 within d_max; raised-cosine 0→1 outside --
-        d_bs = np.array([math.hypot(s.x, s.y) for s in alive], dtype=float)
+        d_bs = np.array([self.net.dist_to_bs(s) for s in alive], dtype=float)
         denom = max(self._R_m - self._d_max, 1e-9)
         ramp = np.clip((d_bs - self._d_max) / denom, 0.0, 1.0)
         f_D = 0.5 * (1.0 - np.cos(ramp * np.pi))
@@ -427,7 +428,7 @@ class FCCRA(BaseAlgorithm):
             return routes
 
         def d_bs(s: Sensor) -> float:
-            return math.hypot(s.x, s.y)
+            return self.net.dist_to_bs(s)
 
         adj: dict[int, list[Sensor]] = {c.id: [] for c in chs}
         for c in chs:
@@ -469,7 +470,7 @@ class FCCRA(BaseAlgorithm):
                 continue
             if s.is_ch:
                 info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
                 s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
                           + net.calc_tx_cost(tx_dist, 'CH'))
                 s.e_res -= s.c_ch
@@ -559,7 +560,7 @@ class FCCRA(BaseAlgorithm):
                                 if s.is_alive and s.is_ch]
         near_bs = [s for s in net.sensors
                     if s.is_alive and not s.is_ch
-                    and math.hypot(s.x, s.y) <= self._d_max]
+                    and net.dist_to_bs(s) <= self._d_max]
         iccns.extend(near_bs)
 
         # For each CH with no other CH within self._d_max, add one relay node.
@@ -603,7 +604,7 @@ class FCCRA(BaseAlgorithm):
         edges[BS_ID] = []
         for sid, s in nodes.items():
             # edge s → BS (origin)
-            d = math.hypot(s.x, s.y)
+            d = net.dist_to_bs(s)
             if d > 0:
                 et = net.calc_tx_cost(d, 'CH')
                 w = et / max(s.e_res, 1e-9)  # no receiver energy at BS

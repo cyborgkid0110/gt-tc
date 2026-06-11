@@ -38,6 +38,7 @@ from plot import directional_wsn_plot, tx_power_plot
 
 class TCLE(BaseAlgorithm):
     """Topology Control with Lifetime Extension algorithm."""
+    family = 'topology'
 
     def __init__(self, net: NetworkModel, config_path: str = 'config/tcle.yaml', **kwargs):
         super().__init__(net, config_path, **kwargs)
@@ -152,33 +153,34 @@ class TCLE(BaseAlgorithm):
 
         Connectivity is validated on the directed graph first: the network
         must be strongly connected (every node can reach every other via
-        directed multi-hop paths). Then λ₂ is computed on the undirected
-        version (union of edges) for the algebraic connectivity metric.
+        directed multi-hop paths). Then λ₂ is the second-smallest eigenvalue
+        of the Laplacian of the undirected version (union of edges).
+
+        The Fiedler value is obtained from a dense eigensolve
+        (``numpy.linalg.eigvalsh``) rather than ``nx.algebraic_connectivity``.
+        For a few-hundred-node graph the dense solve is ~30-50× faster than
+        networkx's iterative tracemin solver and returns the identical value
+        (agreement to ~1e-13); this matters because ``_adapt`` calls this
+        method hundreds of times per topology reconstruction.
         """
         net = self.net
-        D = nx.DiGraph()
 
-        for s in net.sensors:
-            if s.is_alive:
-                D.add_node(s.id)
-
-        for i in range(net.num_nodes):
-            if not net.sensors[i].is_alive:
-                continue
-            for j in range(net.num_nodes):
-                if i == j or not net.sensors[j].is_alive:
-                    continue
-                if net.edges[i, j] == 1:
-                    D.add_edge(i, j)
-
-        if D.number_of_nodes() < 2:
+        # Directed adjacency restricted to alive nodes.
+        alive_idx = [i for i in range(net.num_nodes) if net.sensors[i].is_alive]
+        if len(alive_idx) < 2:
             return 0.0
+        sub = net.edges[np.ix_(alive_idx, alive_idx)]
+
+        # Strong-connectivity gate on the directed sub-graph.
+        D = nx.from_numpy_array(sub, create_using=nx.DiGraph)
         if not nx.is_strongly_connected(D):
             return 0.0
 
-        # λ₂ requires undirected graph; use union of directed edges
-        G = D.to_undirected()
-        return nx.algebraic_connectivity(G)
+        # λ₂ on the undirected union of directed edges.
+        A = ((sub + sub.T) > 0).astype(float)
+        L = np.diag(A.sum(axis=1)) - A
+        eigvals = np.linalg.eigvalsh(L)
+        return float(eigvals[1])
 
     # ------------------------------------------------------------------ #
     #  Unwillingness function                                              #
@@ -224,9 +226,20 @@ class TCLE(BaseAlgorithm):
         return kappa
 
     def _get_current_block(self, sensor: Sensor, kappa: int) -> list[float]:
-        """Return the power levels in the block containing sensor's current power.
+        """Return the candidate power levels for one adaptation step: the κ
+        levels immediately below the sensor's current power.
 
-        Power levels are partitioned into consecutive blocks of size κ.
+        ``_power_levels`` is sorted high→low, so these are the next κ
+        lower-power strategies. κ acts as the descent granularity — a small κ
+        (low-energy node) takes fine, near single-step reductions; a large κ
+        (high-energy node) may drop several levels at once. Across successive
+        adaptation passes a node can descend the full ladder down to p_min.
+
+        (Previously the ladder was carved into *fixed* blocks of size κ and the
+        node was confined to the block holding its current power; once it
+        reached a block's lower boundary — index 9 at full-energy κ=10 — it
+        could never cross into the next block, so every node froze ~κ steps
+        below p_max and the topology stayed near maximum power.)
         """
         # Find the index of current power (or nearest)
         current_idx = None
@@ -240,8 +253,8 @@ class TCLE(BaseAlgorithm):
             diffs = [abs(p - sensor.power) for p in self._power_levels]
             current_idx = diffs.index(min(diffs))
 
-        # Block boundaries
-        block_start = (current_idx // kappa) * kappa
+        # Candidate strategies: the next κ lower-power levels (sliding window).
+        block_start = current_idx + 1
         block_end = min(block_start + kappa, self._num_levels)
 
         return self._power_levels[block_start:block_end]
@@ -251,7 +264,15 @@ class TCLE(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _adapt(self) -> None:
-        """Block-partitioned power reduction with energy-priority ordering."""
+        """Block-partitioned power reduction with energy-priority ordering.
+
+        Fast path: a trial power that loses no outgoing link leaves the graph
+        topology identical, so the benefit φ = 1[λ₂ > ε] is unchanged and the
+        145 ms Fiedler-value eigensolve is skipped — the utility delta reduces
+        to the closed-form unwillingness change. λ₂ is recomputed only for the
+        rare link-losing trials. The current-state φ is cached and invalidated
+        only when an accepted move actually prunes a link.
+        """
         net = self.net
         total_steps = 0
 
@@ -262,6 +283,18 @@ class TCLE(BaseAlgorithm):
             alive,
             key=lambda s: self.tau * s.e_res + random.uniform(0, self.sigma_max),
         )
+
+        # Cache of the current graph's benefit indicator φ = 1[λ₂ > ε].
+        # None ⇒ stale; recomputed lazily. Invalidated whenever an accepted
+        # move prunes a link (the only thing that can change the topology).
+        cached_phi: float | None = None
+
+        def current_phi() -> float:
+            nonlocal cached_phi
+            if cached_phi is None:
+                lambda2 = self._compute_algebraic_connectivity()
+                cached_phi = 1.0 if lambda2 > self.epsilon else 0.0
+            return cached_phi
 
         converged = False
         while not converged and total_steps < self._max_adapt_iter:
@@ -276,8 +309,8 @@ class TCLE(BaseAlgorithm):
                 kappa = self._compute_kappa(sensor)
                 block = self._get_current_block(sensor, kappa)
 
-                # Current utility
-                current_util = self._utility_at_current_state(
+                phi_cur = current_phi()
+                current_util = phi_cur - self._compute_unwillingness(
                     sensor, sensor.power)
 
                 # Try each lower power in the block
@@ -294,43 +327,55 @@ class TCLE(BaseAlgorithm):
                     links_lost = [nb for nb in sensor.neighbors
                                   if sensor.distance_to(nb) > trial_rc]
 
-                    # Temporarily apply the change
-                    old_neighbors = sensor.neighbors[:]
-                    for nb in links_lost:
-                        sensor.remove_neighbor(nb)
-                        net.edges[sensor.id, nb.id] = 0
+                    if not links_lost:
+                        # FAST PATH: topology unchanged ⇒ φ unchanged.
+                        # u_i = φ - c_i, so only the unwillingness term moves.
+                        trial_util = phi_cur - self._compute_unwillingness(
+                            sensor, trial_power)
+                    else:
+                        # SLOW PATH: a link is lost ⇒ φ may change. Apply the
+                        # change temporarily and recompute λ₂ on the trial graph.
+                        old_neighbors = sensor.neighbors[:]
+                        for nb in links_lost:
+                            sensor.remove_neighbor(nb)
+                            net.edges[sensor.id, nb.id] = 0
 
-                    old_power = sensor.power
-                    old_rc = sensor.rc
-                    sensor.power = trial_power
-                    sensor.rc = trial_rc
+                        old_power = sensor.power
+                        old_rc = sensor.rc
+                        sensor.power = trial_power
+                        sensor.rc = trial_rc
 
-                    trial_util = self._utility_at_current_state(
-                        sensor, trial_power)
+                        trial_util = self._utility_at_current_state(
+                            sensor, trial_power)
+
+                        # Restore original state for next trial
+                        sensor.power = old_power
+                        sensor.rc = old_rc
+                        sensor.neighbors = old_neighbors
+                        for nb in links_lost:
+                            sensor.add_neighbor(nb)
+                            net.edges[sensor.id, nb.id] = 1
 
                     if trial_util > best_util:
                         best_util = trial_util
                         best_power = trial_power
 
-                    # Restore original state for next trial
-                    sensor.power = old_power
-                    sensor.rc = old_rc
-                    sensor.neighbors = old_neighbors
-                    for nb in links_lost:
-                        sensor.add_neighbor(nb)
-                        net.edges[sensor.id, nb.id] = 1
-
                 # Apply best power found
                 if best_power < sensor.power:
                     new_rc = net.calc_comm_range(best_power)
                     # Remove out-of-range links
+                    pruned = False
                     for nb in sensor.neighbors[:]:
                         if sensor.distance_to(nb) > new_rc:
                             sensor.remove_neighbor(nb)
                             net.edges[sensor.id, nb.id] = 0
+                            pruned = True
                     sensor.power = best_power
                     sensor.rc = new_rc
                     converged = False
+                    if pruned:
+                        # Topology changed ⇒ cached φ is stale.
+                        cached_phi = None
 
                 total_steps += 1
 

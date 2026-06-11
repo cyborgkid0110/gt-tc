@@ -23,6 +23,7 @@ from plot import directional_wsn_plot
 
 class GTFR(BaseAlgorithm):
     """Game Theory-Based Fuzzy Routing protocol."""
+    family = 'clustering'
 
     def __init__(self, net: NetworkModel, config_path: str = 'config/gtfr.yaml', **kwargs):
         super().__init__(net, config_path, **kwargs)
@@ -481,7 +482,7 @@ class GTFR(BaseAlgorithm):
 
             if s.is_ch:
                 info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
                 s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
                           + net.calc_tx_cost(tx_dist, 'CH'))
                 s.e_res -= s.c_ch

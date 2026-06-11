@@ -4,9 +4,20 @@
 #   Game 2: Pure-strategy power-control game (intra-cluster topology)
 
 # ── Clustering Game (Game 1) ─────────────────────────────────────────
-payoff: 1.0e-3            # rho: benefit/payoff for being a cluster head
+# rho: benefit/payoff for being a cluster head, used in the volunteer
+# probability p0 = 1 - ((c_ch-c_cm)/(rho-c_cm))^(1/k). The election in
+# gt2.py guards this so it stays real-valued in [0,1] for any rho.
+# Calibrated against the running simulation so the steady-state number of
+# elected CHs averages ~20 (10% of 200 nodes).
+payoff: 3.4e-5
+# payoff: 6e-5
 
 # ── Power-Control Game (Game 2) ──────────────────────────────────────
 alpha: 1.5                # weight for energy-balance benefit f_e
 beta: 0.1                 # weight for connectivity benefit f_pr
 mu: 0.01                  # scaling factor for integral energy-cost c_i
+
+# tuned
+# alpha: 2.5                # weight for energy-balance benefit f_e
+# beta: 0.3                 # weight for connectivity benefit f_pr
+# mu: 0.05                  # scaling factor for integral energy-cost c_i

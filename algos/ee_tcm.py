@@ -44,6 +44,7 @@ import graph
 
 class EETCM(BaseAlgorithm):
     """EE-TCM clustering + topology-control game algorithm."""
+    family = 'clustering'
 
     def __init__(self, net: NetworkModel, config_path: str = 'config/ee_tcm.yaml', **kwargs):
         super().__init__(net, config_path, **kwargs)
@@ -120,7 +121,7 @@ class EETCM(BaseAlgorithm):
         for s in alive:
             if s.e0 <= 0:
                 continue
-            e_to_sink = net.calc_tx_cost(math.hypot(s.x, s.y), 'CH')
+            e_to_sink = net.calc_tx_cost(net.dist_to_bs(s), 'CH')
             beta_opt = life_frac * (e_to_sink / s.e0)
             if s.e_res > beta_opt * e_to_sink:
                 if random.random() < self._p_ch_fraction:
@@ -473,7 +474,7 @@ class EETCM(BaseAlgorithm):
                 continue
             if s.is_ch:
                 info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else math.hypot(s.x, s.y)
+                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
                 s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
                           + net.calc_tx_cost(tx_dist, 'CH'))
                 s.e_res -= s.c_ch

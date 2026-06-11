@@ -74,11 +74,16 @@ def run_one(algo, deployment, seed, num_nodes, results_dir,
         return out
 
     from main import build_network, make_algo
+    from scenarios.freeze_scenarios import scenario_path
     _disable_plotting()
 
     log_path = os.path.join(runs_dir, f'{algo}_{deployment}_{seed}.log')
     with open(log_path, 'w') as lf, contextlib.redirect_stdout(lf):
-        net = build_network(deployment, num_nodes, seed)
+        frozen = scenario_path(deployment, num_nodes, seed)
+        if os.path.exists(frozen):
+            net = build_network(scenario=frozen)
+        else:
+            net = build_network(deployment, num_nodes, seed)
         algo_obj = make_algo(
             algo, net, dict(max_rounds=max_rounds, plot_period=10 ** 9))
         algo_obj.run()
