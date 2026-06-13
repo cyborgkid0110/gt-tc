@@ -25,6 +25,8 @@ SCALAR_METRICS = [
     ('total_delivered', 'Total packets to BS'),
     ('cumulative_pdr', 'Cumulative PDR'),
     ('energy_per_packet', 'Energy per delivered packet (J)'),
+    ('mean_avg_hop', 'Average hop count to BS'),
+    ('mean_avg_tx_power', 'Average transmit power per node'),
 ]
 
 
@@ -49,12 +51,23 @@ def _aligned_mean_std(series_list):
     return np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
 
 
-def _curve(runs, deployment, ts_key, ylabel, fname, fig_dir):
+def _curve(runs, deployment, ts_key, ylabel, fname, fig_dir, *, family_key=None):
+    """Per-deployment mean±std over-time curve, one line per algorithm.
+
+    Reads a top-level time-series key (`ts_key`) by default, or a family-extra
+    series when `family_key` is given (skipping runs that lack the family key —
+    e.g. topology algorithms have no `ch_count`).
+    """
     by_algo = defaultdict(list)
     for r in runs:
         if r['deployment'] != deployment:
             continue
-        by_algo[r['algo']].append(r['time_series'][ts_key])
+        if family_key is not None:
+            series = r['time_series'].get('family', {}).get(family_key)
+        else:
+            series = r['time_series'].get(ts_key)
+        if series is not None:
+            by_algo[r['algo']].append(series)
     if not by_algo:
         return
     plt.figure(figsize=(8, 5))
@@ -151,6 +164,7 @@ def write_scenario_summary(runs, results_dir):
     fields = ['deployment', 'algo', 'n_seeds']
     for key, _ in SCALAR_METRICS:
         fields += [f'{key}_mean', f'{key}_std']
+    fields += ['energy_per_packet_median']
 
     path = os.path.join(results_dir, 'summary_by_scenario.csv')
     with open(path, 'w', newline='') as f:
@@ -163,6 +177,9 @@ def write_scenario_summary(runs, results_dir):
                 vals = c[key]
                 row[f'{key}_mean'] = float(np.mean(vals)) if vals else ''
                 row[f'{key}_std'] = float(np.std(vals)) if vals else ''
+            epp = c['energy_per_packet']
+            row['energy_per_packet_median'] = (float(np.median(epp))
+                                               if epp else '')
             w.writerow(row)
     return path
 
@@ -180,6 +197,13 @@ def generate_all(results_dir=RESULTS_DIR):
                f'survival_{deployment}.png', fig_dir)
         _curve(runs, deployment, 'total_energy', 'Total residual energy (J)',
                f'energy_{deployment}.png', fig_dir)
+        _curve(runs, deployment, 'avg_hop', 'Average hop count to BS',
+               f'hop_{deployment}.png', fig_dir)
+        _curve(runs, deployment, 'avg_tx_power',
+               'Average transmit power per node',
+               f'tx_power_{deployment}.png', fig_dir)
+        _curve(runs, deployment, None, 'Cluster-head count',
+               f'ch_count_{deployment}.png', fig_dir, family_key='ch_count')
 
     _bar_metric(runs, 'fnd', 'First Node Death (round)', 'fnd.png', fig_dir)
     _bar_metric(runs, 'hnd', 'Half Node Death (round)', 'hnd.png', fig_dir)

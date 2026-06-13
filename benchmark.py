@@ -11,20 +11,31 @@ import contextlib
 import csv
 import json
 import os
+import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import product
 
 ALGOS = [
     'GT2', 'LEACH', 'GTFR', 'DIA', 'MIA', 'TCLE',
-    'EFTCG-1', 'EFTCG-2', 'FL-LEACH-PSO', 'SCA-LEVY', 'FC-CRA', 
+    'EFTCG-1', 'EFTCG-2', 'FL-LEACH-PSO', 'SCA-LEVY', 'FC-CRA',
     # 'EE-TCM',
 ]
-DEPLOYMENTS = ['poisson', 'uniform', 'grid', 'gaussian', 'edge']
+# Each scenario is a frozen-CSV tag; the sweep loads scenarios/gen/<tag>_s<seed>.csv
+# (generate them with scenarios.freeze_scenarios / scenarios.make_coverage_scenario
+# first). The tag becomes the 'deployment' column in the metrics, so plots and
+# summary_by_scenario.csv group by it automatically. Node count is parsed from the
+# tag's _n<N> token.
+SCENARIOS = [
+    'uniform_n200',
+    'gaussian_n100',
+    'cov_free_n40_r90',
+    'cov_free_n60_r60',
+    'cov_obs_n40_r90',
+    'cov_obs_n60_r60',
+]
 SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 42]
-NUM_NODES = 200
-# Per-deployment node-count overrides; deployments not listed use NUM_NODES.
-# gaussian is run at 100 nodes only (denser hotspots at lower count).
-DEPLOYMENT_NODES = {'gaussian': 100}
+NUM_NODES = 200          # fallback when a tag has no _n<N> token
+SCENARIO_DIR = os.path.join('scenarios', 'gen')
 RESULTS_DIR = 'results'
 WORKERS = os.cpu_count() or 4
 MAX_ROUNDS = 50000
@@ -34,6 +45,7 @@ SUMMARY_FIELDS = [
     'fnd', 'hnd', 'lnd',
     'total_delivered', 'total_generated', 'mean_pdr', 'cumulative_pdr',
     'energy_drained', 'energy_per_packet', 'mean_energy_std',
+    'mean_avg_hop', 'mean_avg_tx_power',
 ]
 
 
@@ -59,39 +71,51 @@ def _disable_plotting():
                     setattr(mod, name, noop)
 
 
-def run_one(algo, deployment, seed, num_nodes, results_dir,
-            max_rounds=MAX_ROUNDS):
-    """Run a single (algo, deployment, seed) and write its JSON. Resumable.
+def scenario_csv(tag, seed):
+    """Frozen-CSV path for a scenario tag and seed."""
+    return os.path.join(SCENARIO_DIR, f'{tag}_s{seed}.csv')
+
+
+def nodes_for(tag):
+    """Node count parsed from a tag's _n<N> token (fallback NUM_NODES)."""
+    m = re.search(r'_n(\d+)', tag)
+    return int(m.group(1)) if m else NUM_NODES
+
+
+def run_one(algo, tag, seed, results_dir, max_rounds=MAX_ROUNDS):
+    """Run a single (algo, scenario tag, seed) and write its JSON. Resumable.
 
     Returns the output path. Skips (and returns the path) if it already exists.
+    Loads the frozen scenario scenarios/gen/<tag>_s<seed>.csv (must exist).
     Picklable top-level function for ProcessPoolExecutor.
     """
     os.environ.setdefault('MPLBACKEND', 'Agg')
     runs_dir = os.path.join(results_dir, 'runs')
     os.makedirs(runs_dir, exist_ok=True)
-    out = os.path.join(runs_dir, f'{algo}_{deployment}_{seed}.json')
+    out = os.path.join(runs_dir, f'{algo}_{tag}_{seed}.json')
     if os.path.exists(out):
         return out
 
+    frozen = scenario_csv(tag, seed)
+    if not os.path.exists(frozen):
+        raise FileNotFoundError(
+            f"missing frozen scenario {frozen}; generate it first "
+            f"(scenarios.freeze_scenarios / scenarios.make_coverage_scenario)")
+
     from main import build_network, make_algo
-    from scenarios.freeze_scenarios import scenario_path
     _disable_plotting()
 
-    log_path = os.path.join(runs_dir, f'{algo}_{deployment}_{seed}.log')
+    log_path = os.path.join(runs_dir, f'{algo}_{tag}_{seed}.log')
     with open(log_path, 'w') as lf, contextlib.redirect_stdout(lf):
-        frozen = scenario_path(deployment, num_nodes, seed)
-        if os.path.exists(frozen):
-            net = build_network(scenario=frozen)
-        else:
-            net = build_network(deployment, num_nodes, seed)
+        net = build_network(scenario=frozen)
         algo_obj = make_algo(
             algo, net, dict(max_rounds=max_rounds, plot_period=10 ** 9))
         algo_obj.run()
         payload = {
             'algo': algo,
-            'deployment': deployment,
+            'deployment': tag,
             'seed': seed,
-            'num_nodes': num_nodes,
+            'num_nodes': nodes_for(tag),
             'summary': algo_obj.metrics.summary(),
             'time_series': algo_obj.metrics.time_series(),
         }
@@ -101,11 +125,6 @@ def run_one(algo, deployment, seed, num_nodes, results_dir,
         json.dump(payload, f)
     os.replace(tmp, out)
     return out
-
-
-def nodes_for(deployment):
-    """Node count for a deployment, honouring DEPLOYMENT_NODES overrides."""
-    return DEPLOYMENT_NODES.get(deployment, NUM_NODES)
 
 
 def build_summary_csv(results_dir):
@@ -137,22 +156,22 @@ def build_summary_csv(results_dir):
 
 def main():
     os.makedirs(os.path.join(RESULTS_DIR, 'runs'), exist_ok=True)
-    tasks = list(product(ALGOS, DEPLOYMENTS, SEEDS))
+    tasks = list(product(ALGOS, SCENARIOS, SEEDS))
     total = len(tasks)
     print(f'Dispatching {total} runs across {WORKERS} workers...')
 
     done = 0
     with ProcessPoolExecutor(max_workers=WORKERS) as ex:
-        futs = {ex.submit(run_one, a, d, s, nodes_for(d), RESULTS_DIR): (a, d, s)
-                for a, d, s in tasks}
+        futs = {ex.submit(run_one, a, tag, s, RESULTS_DIR): (a, tag, s)
+                for a, tag, s in tasks}
         for fut in as_completed(futs):
-            a, d, s = futs[fut]
+            a, tag, s = futs[fut]
             try:
                 fut.result()
                 done += 1
-                print(f'[{done}/{total}] done: {a} / {d} / seed {s}')
+                print(f'[{done}/{total}] done: {a} / {tag} / seed {s}')
             except Exception as e:
-                print(f'FAILED: {a} / {d} / seed {s}: {e!r}')
+                print(f'FAILED: {a} / {tag} / seed {s}: {e!r}')
 
     path = build_summary_csv(RESULTS_DIR)
     print(f'Wrote {path}')

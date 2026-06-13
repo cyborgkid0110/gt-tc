@@ -24,20 +24,19 @@ def topology_family_metrics(net):
     """Per-round extras for topology-control algorithms.
 
     avg_degree: mean out-degree (to alive nodes) over alive nodes.
-    avg_tx_power: mean transmit power over alive nodes.
     lambda2: left None here (optional; not all algorithms expose it).
+
+    Note: avg_tx_power is a universal-core metric (see
+    MetricsCollector.record_round) and is therefore no longer duplicated here.
     """
     alive_mask = np.array([s.is_alive for s in net.sensors])
     alive_ids = [s.id for s in net.sensors if s.is_alive]
     if alive_ids:
         degrees = [int(net.edges[i][alive_mask].sum()) for i in alive_ids]
         avg_degree = float(np.mean(degrees))
-        avg_tx_power = float(np.mean([net.sensors[i].power for i in alive_ids]))
     else:
         avg_degree = 0.0
-        avg_tx_power = 0.0
-    return {'avg_degree': avg_degree, 'avg_tx_power': avg_tx_power,
-            'lambda2': None}
+    return {'avg_degree': avg_degree, 'lambda2': None}
 
 
 class MetricsCollector:
@@ -54,6 +53,8 @@ class MetricsCollector:
         self.energy_std = []
         self.delivered = []
         self.generated = []
+        self.avg_hop = []
+        self.avg_tx_power = []
         # family-extra series: metric_name -> list (one entry per recorded round)
         self.family = {}
 
@@ -74,7 +75,17 @@ class MetricsCollector:
         energies = [s.e_res for s in alive_sensors]
         total_e = float(sum(energies))
         e_std = float(np.std(energies)) if alive >= 2 else 0.0
-        delivered = len(net.build_routing_tree())
+
+        tree = net.build_routing_tree()
+        delivered = len(tree)
+        # avg_hop: mean depth over delivered nodes, +1 for the final hop to the
+        # BS (a gateway has depth 0 = one hop to the sink). 0.0 if nothing
+        # reaches the BS this round.
+        avg_hop = (float(np.mean([n['depth'] for n in tree.values()])) + 1.0
+                   if tree else 0.0)
+        # avg_tx_power: universal-core mean transmit power over alive nodes.
+        avg_tx_power = (float(np.mean([s.power for s in alive_sensors]))
+                        if alive_sensors else 0.0)
 
         self.rounds.append(t)
         self.alive.append(alive)
@@ -82,6 +93,8 @@ class MetricsCollector:
         self.energy_std.append(e_std)
         self.delivered.append(delivered)
         self.generated.append(alive)
+        self.avg_hop.append(avg_hop)
+        self.avg_tx_power.append(avg_tx_power)
 
         if family_extras:
             for k, v in family_extras.items():
@@ -110,6 +123,9 @@ class MetricsCollector:
                              if total_delivered > 0 else None)
         mean_energy_std = (float(np.mean(self.energy_std))
                            if self.energy_std else 0.0)
+        mean_avg_hop = float(np.mean(self.avg_hop)) if self.avg_hop else 0.0
+        mean_avg_tx_power = (float(np.mean(self.avg_tx_power))
+                             if self.avg_tx_power else 0.0)
 
         self._summary = {
             'fnd': fnd,
@@ -122,6 +138,8 @@ class MetricsCollector:
             'energy_drained': energy_drained,
             'energy_per_packet': energy_per_packet,
             'mean_energy_std': mean_energy_std,
+            'mean_avg_hop': mean_avg_hop,
+            'mean_avg_tx_power': mean_avg_tx_power,
         }
         return self._summary
 
@@ -140,5 +158,7 @@ class MetricsCollector:
             'energy_std': self.energy_std,
             'delivered': self.delivered,
             'generated': self.generated,
+            'avg_hop': self.avg_hop,
+            'avg_tx_power': self.avg_tx_power,
             'family': self.family,
         }
