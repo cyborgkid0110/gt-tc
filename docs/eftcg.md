@@ -12,6 +12,24 @@ $$\text{low}(v) = \begin{cases} \min\{\text{low}(v),\ \text{low}(w)\} & \text{(I
 
 where $\text{time}(v)$ is the DFS discovery timestamp of $v$, and $\text{low}(v)$ is the earliest ancestor reachable from the subtree of $v$ without passing through its parent. A non-root node $v$ is a cut-point if $\text{low}(w) \geq \text{time}(v)$ for any child $w$.
 
+> **Implementation note — the base station is part of $f_k$.** The original
+> paper treats the sink as a node in the connectivity graph (the sink is passive
+> infrastructure that never plays the game, but paths route through it like any
+> other node) yet does not formalise sink-aware topology control, flagging it as
+> future work. This implementation makes that explicit: `_build_directed_graph`
+> adds the base station as a vertex, so $f_k$ enforces **sink connectivity** —
+> every alive node must retain a directed path (direct or multi-hop) *to* the BS
+> and the BS a directed path *back*, with the two paths allowed to differ
+> (strong connectivity on the directed sensor+BS graph; for $k=2$, biconnectivity
+> including the BS). Sensor–sensor links stay unidirectional. Edge rules: forward
+> $i\!\to\!\text{BS}$ when node $i$ reaches the BS at its own power
+> ($\text{dist\_to\_bs}(i) \le rc_i$); reverse $\text{BS}\!\to\!i$ when $i$ is
+> within the BS's range at $p_{\max}$ (the BS is recharged infrastructure with no
+> energy limit, so its reach is independent of the node's power). Without this,
+> EFTCG would optimise node-to-node connectivity while silently partitioning the
+> network from the sink — observed as zero delivery in clustered (gaussian)
+> deployments before the fix.
+
 ---
 
 ## 2. Utility Function Design

@@ -126,10 +126,32 @@ class EFTCG(BaseAlgorithm):
     #  k-connectivity                                                      #
     # ------------------------------------------------------------------ #
 
+    # Sentinel vertex id for the base station in the connectivity graph
+    # (distinct from the integer sensor ids).
+    _BS = 'BS'
+
     def _build_directed_graph(self) -> nx.DiGraph:
-        """Build directed graph from net.edges for strong connectivity check."""
+        """Build the directed connectivity graph for the f_k check.
+
+        The base station is included as a vertex so that f_k enforces sink
+        connectivity, matching the problem's constraint: every alive node must
+        have a directed path (direct or multi-hop) to the BS, and the BS a
+        directed path back to it; the two paths need not be the same, and
+        individual sensor-sensor links stay unidirectional.
+
+        Edges to/from the BS:
+          - forward  i -> BS : node i can reach the BS at its own power
+                               (dist_to_bs(i) <= sensors[i].rc).
+          - reverse  BS -> i : node i is within the BS's max-power range. The
+                               BS is recharged infrastructure with no energy
+                               limit (always available), so it transmits at
+                               p_max; its reach is therefore independent of the
+                               node's power, allowing the two directions to use
+                               different paths.
+        """
         net = self.net
         D = nx.DiGraph()
+        D.add_node(self._BS)
 
         for s in net.sensors:
             if s.is_alive:
@@ -144,6 +166,16 @@ class EFTCG(BaseAlgorithm):
                 if net.edges[i, j] == 1:
                     D.add_edge(i, j)
 
+        bs_range = net.calc_comm_range(net.p_max)
+        for s in net.sensors:
+            if not s.is_alive:
+                continue
+            d_bs = net.dist_to_bs(s)
+            if d_bs <= s.rc:
+                D.add_edge(s.id, self._BS)
+            if d_bs <= bs_range:
+                D.add_edge(self._BS, s.id)
+
         return D
 
     def _check_k_connectivity(self, D: nx.DiGraph) -> bool:
@@ -151,8 +183,12 @@ class EFTCG(BaseAlgorithm):
 
         Connectivity is checked on the directed graph (strong connectivity)
         to ensure every node can both send to and receive from every other
-        via multi-hop directed paths. For k=2 biconnectivity, the undirected
-        version is additionally checked for no cut-points.
+        via multi-hop directed paths. Because ``_build_directed_graph`` adds
+        the base station as a vertex, strong connectivity here also guarantees
+        every node has a directed path to the BS and back (sink connectivity).
+        For k=2 biconnectivity, the undirected version is additionally checked
+        for no cut-points (the BS included, i.e. two independent paths to the
+        sink).
         """
         if D.number_of_nodes() < 2:
             return False
@@ -221,8 +257,14 @@ class EFTCG(BaseAlgorithm):
                 # Identify outgoing links that would be lost
                 links_lost = [nb for nb in sensor.neighbors
                               if sensor.distance_to(nb) > new_rc]
+                # A direct link to the BS is also a link that can be lost. The
+                # fast path must not silently sever sink connectivity, so a node
+                # that would drop its direct BS link is routed to the slow path
+                # where f_k (which includes the BS) is checked.
+                d_bs = net.dist_to_bs(sensor)
+                bs_link_lost = (d_bs <= sensor.rc) and (d_bs > new_rc)
 
-                if not links_lost:
+                if not links_lost and not bs_link_lost:
                     # FAST PATH: topology unchanged, check if utility improves.
                     # Δu = f_k * α_i * (old_power - new_power) / p_max
                     # Strictly positive iff α_i > 0 (i.e. e_res < e0).
