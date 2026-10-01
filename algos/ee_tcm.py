@@ -404,7 +404,7 @@ class EETCM(BaseAlgorithm):
                     if not sensor.is_alive or sensor.power <= net.p_min:
                         continue
 
-                    new_power = max(round(sensor.power - net.p_step, 6),
+                    new_power = max(round(sensor.power - net.p_step, 12),
                                      net.p_min)
                     if new_power >= sensor.power:
                         continue
@@ -457,12 +457,13 @@ class EETCM(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _maintenance(self) -> None:
-        """Deduct energy using routing-based per-hop TX cost.
+        """Charge per-round maintenance energy along the cluster routing tree
+        (CM->relay->CH->backbone->BS) via the shared cluster-tree helpers.
         CM costs are optionally reduced by the compression factor 1/a."""
         net = self.net
-
-        routing_tree = net.build_routing_tree()
-        costs = net.compute_maintenance_costs(routing_tree)
+        tree = net.build_cluster_routing_tree()
+        self._routing_tree = tree
+        costs = net.compute_cluster_maintenance_costs(tree)
 
         compression_enabled = self._compression_a > 1
         cm_compression = (1.0 / self._compression_a
@@ -470,17 +471,14 @@ class EETCM(BaseAlgorithm):
         cm_overhead = self._compression_overhead if compression_enabled else 0.0
 
         for s in net.sensors:
-            if not s.is_alive:
+            if not s.is_alive or s.id not in costs:
                 continue
             if s.is_ch:
-                info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
-                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
-                          + net.calc_tx_cost(tx_dist, 'CH'))
+                s.c_ch = costs[s.id]
                 s.e_res -= s.c_ch
                 if s.e_res <= 0:
                     self._track_death(s)
-            elif s.id in costs:
+            else:
                 if not s._entered:
                     continue
                 cost = costs[s.id] * cm_compression + cm_overhead

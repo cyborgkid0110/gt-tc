@@ -73,8 +73,8 @@ class TCLE(BaseAlgorithm):
         self._power_levels: list[float] = []
         p = net.p_max
         while p >= net.p_min:
-            self._power_levels.append(round(p, 6))
-            p = round(p - net.p_step, 6)
+            self._power_levels.append(round(p, 12))
+            p = round(p - net.p_step, 12)
         if self._power_levels[-1] > net.p_min:
             self._power_levels.append(net.p_min)
         self._num_levels = len(self._power_levels)
@@ -416,6 +416,7 @@ class TCLE(BaseAlgorithm):
         net = self.net
 
         routing_tree = net.build_routing_tree()
+        self._routing_tree = routing_tree
         costs = net.compute_maintenance_costs(routing_tree)
 
         for s in net.sensors:

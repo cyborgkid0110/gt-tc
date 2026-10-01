@@ -248,7 +248,7 @@ class EFTCG(BaseAlgorithm):
                 if sensor.power <= net.p_min:
                     continue
 
-                new_power = max(round(sensor.power - net.p_step, 6), net.p_min)
+                new_power = max(round(sensor.power - net.p_step, 12), net.p_min)
                 if new_power >= sensor.power:
                     continue
 
@@ -323,6 +323,7 @@ class EFTCG(BaseAlgorithm):
         net = self.net
 
         routing_tree = net.build_routing_tree()
+        self._routing_tree = routing_tree
         costs = net.compute_maintenance_costs(routing_tree)
 
         for s in net.sensors:

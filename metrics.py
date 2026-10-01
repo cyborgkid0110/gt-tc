@@ -60,7 +60,7 @@ class MetricsCollector:
 
         self._summary = None
 
-    def record_round(self, net, t, family_extras=None):
+    def record_round(self, net, t, family_extras=None, routing_tree=None):
         """Append one round's metrics. Call once per completed round.
 
         Delivery is connectivity-based: each alive node generates one packet
@@ -76,13 +76,15 @@ class MetricsCollector:
         total_e = float(sum(energies))
         e_std = float(np.std(energies)) if alive >= 2 else 0.0
 
-        tree = net.build_routing_tree()
-        delivered = len(tree)
-        # avg_hop: mean depth over delivered nodes, +1 for the final hop to the
-        # BS (a gateway has depth 0 = one hop to the sink). 0.0 if nothing
-        # reaches the BS this round.
-        avg_hop = (float(np.mean([n['depth'] for n in tree.values()])) + 1.0
-                   if tree else 0.0)
+        tree = routing_tree if routing_tree is not None \
+            else net.build_routing_tree()
+        delivering = [info for info in tree.values()
+                      if info.get('delivers', True)]
+        delivered = len(delivering)
+        # avg_hop: mean depth over *delivering* nodes, +1 for the final hop to
+        # the BS. None when nothing reaches the BS (undefined, not 0 hops).
+        avg_hop = (float(np.mean([info['depth'] for info in delivering])) + 1.0
+                   if delivering else None)
         # avg_tx_power: universal-core mean transmit power over alive nodes.
         avg_tx_power = (float(np.mean([s.power for s in alive_sensors]))
                         if alive_sensors else 0.0)
@@ -123,7 +125,8 @@ class MetricsCollector:
                              if total_delivered > 0 else None)
         mean_energy_std = (float(np.mean(self.energy_std))
                            if self.energy_std else 0.0)
-        mean_avg_hop = float(np.mean(self.avg_hop)) if self.avg_hop else 0.0
+        _hops = [h for h in self.avg_hop if h is not None]
+        mean_avg_hop = float(np.mean(_hops)) if _hops else 0.0
         mean_avg_tx_power = (float(np.mean(self.avg_tx_power))
                              if self.avg_tx_power else 0.0)
 

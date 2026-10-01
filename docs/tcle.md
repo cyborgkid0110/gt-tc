@@ -58,6 +58,153 @@ $$\kappa_i(t_k) = K_i(t_k) = \lceil K \times c_i(p_i^{max}, E_i(t_k)) \rceil$$
 
 This limits the total number of topology reconstructions to $K$ over the network lifetime, regardless of the number of sensors — a significant reduction compared to schemes that trigger reconstruction per-sensor, which require $K \times n$ reconstructions.
 
+**Algorithm 1: Power Adaptation at Sensor i**
+
+```
+================================================================================
+ALGORITHM 1: Power Adaptation at Sensor i
+================================================================================
+INPUT  : - Local topology Gi
+         - Minimum transmit power w(j,k) for all links ljk in Li
+         - Residual energy Ei
+         - Partition Pi(κi) of strategy set Si
+OUTPUT : - Optimal transmit power p*i
+
+--------------------------------------------------------------------------------
+INITIALIZATION
+--------------------------------------------------------------------------------
+  SET   counter mi = 1
+  SET   p*i = p_max_i  (first element of partition block Pmi_i(κi))
+
+--------------------------------------------------------------------------------
+MAIN LOOP: repeat until p*i is a Nash Equilibrium
+--------------------------------------------------------------------------------
+  WHILE p*i is NOT a Nash Equilibrium DO
+
+    STEP 1 — Check turn order
+    │
+    ├── IF mi <= mj for ALL neighbors j in Ni THEN
+    │       SET wait time:
+    │           tw = min( τ·Ei + σ, t_max )
+    │
+    │       where:
+    │           τ     = constant unit time
+    │           σ     = random time perturbation
+    │           t_max = maximum allowed wait time
+    │
+    │       [NOTE: sensors with LOW residual energy get SHORTER wait time,
+    │              so they update their power FIRST — "first-mover advantage"]
+    │
+    └── END IF
+
+    STEP 2 — Check for neighbor updates
+    │
+    ├── IF no HELLO message received from any neighbor j in Ni
+    │   within wait time tw THEN
+    │
+    │       SELECT optimal power from current power + next partition block:
+    │
+    │           p*i = argmax  ui(pi, p-i)
+    │                pi ∈ {p*i} ∪ P(mi+1)_i(κi)
+    │
+    │       [NOTE: sensor picks power that MAXIMIZES its utility
+    │              from its current power and the (mi+1)-th block]
+    │
+    │       IF p*i is NOT a Nash Equilibrium THEN
+    │           INCREMENT counter:  mi = mi + 1
+    │       END IF
+    │
+    ├── ELSE (a HELLO message WAS received from neighbor j)
+    │
+    │       CALL update(Gi)
+    │       [update local topology based on neighbor's new power setting]
+    │
+    └── END IF
+
+    STEP 3 — Check Nash Equilibrium status
+    │
+    ├── IF p*i IS a Nash Equilibrium THEN
+    │       SET mi = ∞
+    │       [signals to neighbors that sensor i is done updating,
+    │        allowing them to continue their own updates]
+    └── END IF
+
+    STEP 4 — Broadcast update
+        BROADCAST a HELLO message at p_max_i containing:
+            - new power setting  p*i
+            - new counter value  mi
+
+  END WHILE
+
+--------------------------------------------------------------------------------
+RETURN p*i
+--------------------------------------------------------------------------------
+COMPLEXITY: O(η · |Ni|²)
+    where η = number of discrete power levels
+          |Ni| = number of neighbors of sensor i
+================================================================================
+```
+
+---
+
+**Algorithm 2: update(Gi)**
+
+```
+================================================================================
+ALGORITHM 2: update(Gi) — Local Topology Update at Sensor i
+================================================================================
+TRIGGER: Upon receiving a HELLO message from neighbor j in Ni
+         containing j's new power setting p*j
+
+--------------------------------------------------------------------------------
+MAIN LOGIC
+--------------------------------------------------------------------------------
+
+  STEP 1 — Check if neighbor j is still reachable via local topology
+  │
+  ├── IF there EXISTS a path from sensor i to sensor j
+  │   in which ALL intermediate nodes are sensor i's neighbors THEN
+  │
+  │       UPDATE Li:
+  │           - Remove link lij if min{p*i, p*j} < w(i,j)
+  │             (i.e., j's new power can no longer support the link)
+  │           - Keep link lij if min{p*i, p*j} >= w(i,j)
+  │
+  │       [RESULT: local topology Gi is updated to reflect
+  │                j's new power setting, links may be added or removed]
+  │
+  ├── ELSE (path to j passes through a node k where k ∈ Nj but k ∉ Ni)
+  │
+  │       REMOVE neighbor j from Vi
+  │       REMOVE all links associated with j from Li
+  │
+  │       [REASON: sensor i cannot fully observe the path to j,
+  │                so j is excluded to prevent incorrect connectivity
+  │                assumptions in future power adaptation steps]
+  │
+  └── END IF
+
+--------------------------------------------------------------------------------
+RETURN updated Gi
+================================================================================
+```
+
+---
+
+**Relationship Between the Two Algorithms**
+
+```
+  Algorithm 1 (Power Adaptation)
+  │
+  ├── calls ──► Algorithm 2 (update Gi)
+  │               whenever a HELLO is received from a neighbor
+  │
+  ├── Algorithm 2 updates the local topology Gi
+  │
+  └── Algorithm 1 uses the updated Gi to re-evaluate
+      Nash Equilibrium status and select next power level
+```
+
 ## 5. Convergence and Complexity
 
 *(Section V, Xu et al., 2016)*
@@ -73,3 +220,34 @@ The TCLE algorithm was evaluated against DIA and EWTC in a 500×500 m² deployme
 ## Algorithmic pipeline of TCLE:
 
 ![alt text](tcle.png)
+
+## Implementation w.r.t docs
+
+**Verdict:** Yes, it matches the methodology's intent — with one geometric difference.
+
+My change makes the candidate set for each step the $\kappa$ power levels immediately below the current power, and the search repeats until no node can reduce further without dropping $\lambda_2 \le \varepsilon$ (the NE). Lining that up against the doc:
+
+| Algorithm 1 (doc) | My fix | Match? |
+| --- | --- | --- |
+| Candidate set = {current} $\cup$ next $\kappa$-block (STEP 2) | {current} (via `best_power=sensor.power` init) $\cup$ next $\kappa$ lower levels | ✅ same concept |
+| $\text{argmax } u_i$ over that set | `_adapt` tracks `best_util` over the block, keeps current if nothing beats it | ✅ |
+| Repeat "until $p^*_i$ is a Nash Equilibrium" (STEP 3, line 82) | outer loop until a pass makes no move | ✅ |
+| Wait-time order, low-energy first (STEP 1, lines 86–96) | `adapt_order` sorted by $\tau \cdot e_{\text{res}}$ + rand | ✅ |
+| Walk down through successive blocks as $m_i$ increments (line 114) | window slides down as current power drops | ✅ same outcome |
+
+---
+
+So the essential mechanism — consider the current power plus the next $\kappa$-sized chunk of lower levels, take the utility-max, and keep descending through the partition until the connectivity floor — is exactly what the fix implements, and it's what the original code violated (it was frozen in the block containing the current power, never advancing $m_i$).
+
+### The one difference, and why the fix is arguably the better reading
+
+The doc's blocks are fixed-aligned (boundaries at $0, \kappa, 2\kappa, \dots$) advanced by the counter $m_i$; my version uses a **sliding window** relative to the current power. They coincide when a node sits on a block boundary and only differ in jump alignment otherwise — both converge to the same NE.
+
+But note a quirk in the literal fixed-block reading:
+
+* At $m_i=1$, the current power is $p^{(1)}$ (index 0) and STEP 2 only offers $\{\text{index } 0\} \cup \text{block } 2$ (indices $\kappa \dots 2\kappa-1$) — **it skips block 1's interior** (indices $1 \dots \kappa-1$).
+* If a node's true connectivity floor lies inside block 1, every option in block 2 breaks connectivity ($\phi=0$), so the $\text{argmax}$ keeps it at $p_{\max}$ — i.e., it can halt above the real floor.
+
+That would contradict the Pareto-optimality the paper proves in §3 (line 35: *"no sensor can reduce its power further without disconnecting"*). The sliding window has no such gap: it inspects every level as it descends, so it reaches the genuine NE/Pareto point.
+
+> **Conclusion:** The fix is faithful to the paper's NE/Pareto definition even where it diverges from a byte-literal transcription of the block-counter loop.

@@ -148,7 +148,7 @@ class DIAMIA(BaseAlgorithm):
                 if sensor.power <= net.p_min:
                     continue
 
-                new_power = max(round(sensor.power - net.p_step, 6), net.p_min)
+                new_power = max(round(sensor.power - net.p_step, 12), net.p_min)
                 if new_power >= sensor.power:
                     continue
 
@@ -221,7 +221,7 @@ class DIAMIA(BaseAlgorithm):
 
             while trial_power > net.p_min:
                 trial_power = max(
-                    round(trial_power - net.p_step, 6), net.p_min)
+                    round(trial_power - net.p_step, 12), net.p_min)
 
                 trial_rc = net.calc_comm_range(trial_power)
 
@@ -331,11 +331,7 @@ class DIAMIA(BaseAlgorithm):
 
     def _omega(self, si: Sensor, sj: Sensor) -> float:
         """Minimum power for si to reach sj (inverse comm-range model)."""
-        net = self.net
-        d = si.distance_to(sj)
-        return (d ** net.gamma * net.p_th
-                * (4 * math.pi / net.wave) ** net.gamma
-                / (net.g_ant * net.eta))
+        return self.net.calc_power_for_range(si.distance_to(sj))
 
     # ------------------------------------------------------------------ #
     #  Maintenance: energy deduction                                       #
@@ -346,6 +342,7 @@ class DIAMIA(BaseAlgorithm):
         net = self.net
 
         routing_tree = net.build_routing_tree()
+        self._routing_tree = routing_tree
         costs = net.compute_maintenance_costs(routing_tree)
 
         for s in net.sensors:

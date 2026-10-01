@@ -49,6 +49,13 @@ count) with no energy, delivery, or aggregation data. This design adds:
 | **PDR** | delivered / generated (mean across rounds and cumulative) | derived |
 | **Throughput** | delivered packets per round | per-round series |
 | **Energy per delivered packet** | total energy drained ÷ total delivered | derived |
+| **Average hop count to BS** | mean routing-tree depth over delivered nodes, +1 for the final hop to the sink (0.0 if nothing reaches the BS) | `build_routing_tree()` |
+| **Average tx power / node** | mean `s.power` over alive nodes | `NetworkModel` |
+
+> **Update 2026-06-13:** *Average hop count to BS* and *Average tx power / node*
+> were promoted to **universal-core** (computed in `record_round` for every
+> algorithm). The routing tree built for *delivered* is reused for *avg hop*.
+> *Average tx power* is therefore no longer a topology-family extra.
 
 ### Clustering-family extras
 *(GT2, LEACH, GTFR, FL-LEACH-PSO, SCA-Lévy, FC-CRA, EE-TCM)*
@@ -64,8 +71,9 @@ count) with no energy, delivery, or aggregation data. This design adds:
 | Metric | Definition |
 |--------|------------|
 | **Average node degree** | mean out-degree on the directed adjacency graph |
-| **Average tx power / radius** | mean transmission radius `rc` over alive nodes |
 | **Algebraic connectivity λ₂ / k-connectivity** | structural robustness (TCLE/EFTCG already compute these) |
+
+*(Average tx power moved to the universal-core table above as of 2026-06-13.)*
 
 ## Data-delivery definition (fair, algorithm-agnostic)
 
@@ -96,8 +104,10 @@ count) with no energy, delivery, or aggregation data. This design adds:
   - `alive` = count of `s.is_alive`
   - `total_energy` = Σ `s.e_res` for alive
   - `energy_std` = std-dev of `s.e_res` over alive (0.0 if < 2 alive)
-  - `delivered` = `len(net.build_routing_tree())`
+  - `delivered` = `len(net.build_routing_tree())` (tree built once, reused below)
   - `generated` = `alive`
+  - `avg_hop` = mean routing-tree `depth` over delivered nodes + 1 (0.0 if empty)
+  - `avg_tx_power` = mean `s.power` over alive nodes (0.0 if none alive)
   - merges `family_extras` into the family-series dict.
 - `finalize()` — derives scalar markers once the run ends:
   - `fnd` = first `round` where `alive < num_nodes` (else `None`)
@@ -109,6 +119,8 @@ count) with no energy, delivery, or aggregation data. This design adds:
   - `energy_drained` = `initial_total_energy − final total_energy`
   - `energy_per_packet` = `energy_drained / total_delivered` (guard 0)
   - `mean_energy_std` = mean of per-round `energy_std`
+  - `mean_avg_hop` = mean of per-round `avg_hop`
+  - `mean_avg_tx_power` = mean of per-round `avg_tx_power`
 - `summary() -> dict` — flat dict of the scalars above (CSV row).
 - `time_series() -> dict` — the per-round lists (JSON payload).
 
@@ -134,7 +146,7 @@ count) with no energy, delivery, or aggregation data. This design adds:
 - Each override reads only already-computed per-round state; it must not mutate
   network state or trigger extra computation that changes energy use.
 
-**4. `benchmark.py` — sweep runner**
+**4. `benchmark.py` — sweep runner (parallel)**
 
 - Config constants at top of file:
   - `ALGOS` — all 12 algorithm keys (same identifiers as `main.py`'s selector).
@@ -142,19 +154,36 @@ count) with no energy, delivery, or aggregation data. This design adds:
   - `SEEDS = [1, 2, 3]` (tunable)
   - `NUM_NODES = 200`
   - `RESULTS_DIR = 'results'`
-- For each `(algo, deployment, seed)`:
-  - Build the network via the seeded `build_network(deployment, num_nodes, seed)`
-    helper (reuse/extract from `main.py`).
-  - Instantiate the algorithm with `plot_period = ∞` (no plot windows;
-    `MPLBACKEND=Agg` respected).
-  - `run()`, then read `algo.metrics`.
-  - Write `results/runs/<algo>_<deploy>_<seed>.json` (= `time_series()` +
-    `summary()` + metadata: algo, deployment, seed, num_nodes).
-  - Append a row to `results/summary.csv` (summary scalars + algo/deploy/seed).
-- **Resumable:** skip a run if its JSON already exists. `summary.csv` is rebuilt
-  from the per-run JSON files at the end (so re-runs don't duplicate rows).
-- Sequential execution; intended to be launched in the background (the DIA sweep
-  is slow — ~140k better-response steps to converge).
+  - `WORKERS = os.cpu_count()` (tunable; `1` forces sequential for debugging).
+- **Task model — embarrassingly parallel.** Each `(algo, deployment, seed)` run
+  is fully independent (no shared state; own network, own RNG, own metrics, own
+  output file), so runs are distributed across worker **processes**.
+- A top-level, picklable worker function `run_one(algo, deployment, seed,
+  num_nodes, results_dir) -> path | None`:
+  - Returns early (skip) if `results/runs/<algo>_<deploy>_<seed>.json` exists
+    (resumability + idempotency, also makes a parallel re-run safe).
+  - Sets `MPLBACKEND=Agg` and builds the network via the seeded
+    `build_network(deployment, num_nodes, seed)` helper (reuse/extract from
+    `main.py`).
+  - Instantiates the algorithm with `plot_period = ∞` (no plot windows),
+    `run()`s, then writes `results/runs/<algo>_<deploy>_<seed>.json`
+    (= `time_series()` + `summary()` + metadata: algo, deployment, seed,
+    num_nodes). Each worker writes **only its own file** — no shared-file
+    contention.
+- The driver builds the full task list (cartesian product), dispatches via
+  `concurrent.futures.ProcessPoolExecutor(max_workers=WORKERS)`, and reports
+  progress as futures complete. **Processes, not threads** — runs are CPU-bound,
+  so the GIL would serialize a thread pool.
+- **`summary.csv` is built once, after the pool drains**, by reading all
+  `results/runs/*.json`. This avoids concurrent writers racing on a shared CSV
+  and keeps the summary consistent regardless of completion order.
+- **Resumable & safe to re-run:** existing run files are skipped, so a crashed or
+  partial sweep can be resumed simply by re-running. Intended to be launched in
+  the background (the DIA sweep is slow — ~140k better-response steps to
+  converge — but now overlaps with other runs).
+- **Determinism is preserved under parallelism:** each run's result depends only
+  on its own `(deployment, num_nodes, seed)` seeded RNG, independent of
+  scheduling order or worker count.
 
 **5. `plot_benchmark.py` — figures from persisted data** (never re-runs sweep)
 
@@ -194,7 +223,8 @@ results/
 ## Out of scope (YAGNI)
 
 - Markdown summary tables (derivable from `summary.csv` later).
-- Parallel/distributed sweep execution.
+- **Multi-machine / distributed** sweep execution. Single-machine multiprocess
+  parallelism is in scope (component 4); cross-host orchestration is not.
 - Probabilistic channel-loss model (delivery is connectivity-based).
 - Protocol-faithful per-algorithm packet accounting (rejected for fairness —
   Approach B).

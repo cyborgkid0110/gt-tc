@@ -28,6 +28,7 @@ class BaseAlgorithm(ABC):
 
         # metrics collection (shared, algorithm-agnostic)
         self.metrics = MetricsCollector(net)
+        self._routing_tree = None   # set by _run_round; passed to record_round
 
     @abstractmethod
     def _run_round(self) -> bool:
@@ -37,12 +38,14 @@ class BaseAlgorithm(ABC):
     def run(self):
         """Main simulation loop."""
         while self.t < self.max_rounds:
+            self._routing_tree = None
             ok = self._run_round()
             if not ok:
                 break
             # record before incrementing t so fnd matches t_no_dead's convention
             self.metrics.record_round(self.net, self.t,
-                                      self._collect_family_metrics())
+                                      self._collect_family_metrics(),
+                                      routing_tree=self._routing_tree)
             self.t += 1
 
         self.metrics.finalize()
@@ -57,6 +60,28 @@ class BaseAlgorithm(ABC):
         if self.family == 'topology':
             return topology_family_metrics(self.net)
         return {}
+
+    def _charge_cluster_maintenance(self):
+        """Build the cluster routing tree, stash it, and charge energy to every
+        alive node along the CM->relay->CH->backbone->BS path (forward-only
+        members, CH aggregation), tracking deaths. Returns the tree.
+        """
+        net = self.net
+        tree = net.build_cluster_routing_tree()
+        self._routing_tree = tree
+        costs = net.compute_cluster_maintenance_costs(tree)
+        for s in net.sensors:
+            if not s.is_alive or s.id not in costs:
+                continue
+            cost = costs[s.id]
+            if s.is_ch:
+                s.c_ch = cost
+            else:
+                s.c_cm = cost
+            s.e_res -= cost
+            if s.e_res <= 0:
+                self._track_death(s)
+        return tree
 
     def _track_death(self, sensor):
         """Increment dead count and record first-death round."""

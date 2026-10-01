@@ -23,6 +23,7 @@ Single-scenario options:
 """
 import argparse
 import os
+import re
 
 import matplotlib
 matplotlib.use('Agg')
@@ -137,12 +138,12 @@ def _polygon_patch(geom, **kw):
 
 def _r_conn():
     """Physics max-power comm range (the benchmark's connectivity radius)."""
-    from main import (P_MAX, SNR, NF_RX, N0, BW, WAVE, GAMMA, G_ANT, ETA,
+    from main import (P_MAX, SNR, NF_RX, N0, BW, WAVE, GAMMA, G_TX, G_RX, ETA,
                       R_BIT, E0)
     from model import Sensor, NetworkModel
     s = Sensor(id=0, x=0.0, y=0.0, e0=E0, power=P_MAX, Vpre=3.0)
     net = NetworkModel([s], AREA, snr=SNR, nf_rx=NF_RX, n0=N0, bw=BW, wave=WAVE,
-                       gamma=GAMMA, g_ant=G_ANT, eta=ETA, r_bit=R_BIT, p_max=P_MAX)
+                       gamma=GAMMA, g_tx=G_TX, g_rx=G_RX, eta=ETA, r_bit=R_BIT, p_max=P_MAX)
     return net.calc_comm_range(P_MAX)
 
 
@@ -180,6 +181,9 @@ def plot_from_def(def_path, coverage_disks, show_links, out):
         xs, ys = zip(*ring)
         ax.fill(xs, ys, facecolor=OBSTACLE_COLOR, alpha=0.55, hatch='xx',
                 edgecolor=OBSTACLE_COLOR, lw=1.0, zorder=2)
+    for cx, cy, rad in d.get('circles', []):
+        ax.add_patch(Circle((cx, cy), rad, facecolor=OBSTACLE_COLOR, alpha=0.55,
+                            hatch='xx', edgecolor=OBSTACLE_COLOR, lw=1.0, zorder=2))
 
     if coverage_disks:
         for x, y in positions:
@@ -209,6 +213,90 @@ def plot_from_scenario(csv_path, coverage_disks, show_links, out):
 
     _finish(ax, positions, bs_pos, area, f'{name}: {len(positions)} nodes')
     return _save(fig, out, name)
+
+
+def _obstacles_for_tag(tag):
+    """Circular obstacles [[cx, cy, r], ...] for a coverage tag, if known.
+
+    Frozen CSVs store only node positions + BS, not obstacle geometry, so look
+    the circles up from the coverage-config table by tag. Returns [] for the
+    random deployments (no obstacles) or any unrecognised tag.
+    """
+    try:
+        from scenarios.freeze_coverage_scenarios import COVERAGE_CONFIGS
+    except Exception:
+        return []
+    for c in COVERAGE_CONFIGS:
+        if c.get('tag') == tag:
+            return c.get('circles', [])
+    return []
+
+
+def plot_grid(csv_paths, coverage_disks, rows, cols, out, titles=None):
+    """Tile several frozen scenario CSVs into one rows x cols figure.
+
+    One panel per CSV (nodes + BS + any known obstacle circles). The panel title
+    defaults to the scenario tag (CSV meta 'source', else the filename stem minus
+    _s<seed>); pass `titles` (one per CSV, in order) to override the captions.
+    """
+    n = len(csv_paths)
+    if n > rows * cols:
+        raise SystemExit(f"{n} scenarios do not fit in a {rows}x{cols} grid")
+    if titles is not None and len(titles) != n:
+        raise SystemExit(f"--titles has {len(titles)} entries but {n} scenarios")
+
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.3, rows * 4.3))
+    axes = np.atleast_1d(axes).ravel()
+    for i, (ax, csv_path) in enumerate(zip(axes, csv_paths)):
+        positions, _vpre, bs_pos, meta = load_scenario(csv_path)
+        area = float(meta.get('area', AREA))
+        stem = os.path.splitext(os.path.basename(csv_path))[0]
+        # Normalise to the family tag: drop a trailing _s<seed> (some CSVs record
+        # 'source' with the seed, some without) so the obstacle lookup matches.
+        tag = re.sub(r'_s\d+$', '', meta.get('source') or stem)
+        cov_r = meta.get('coverage_radius', '')
+
+        for cx, cy, rad in _obstacles_for_tag(tag):
+            ax.add_patch(Circle((cx, cy), rad, facecolor=OBSTACLE_COLOR,
+                                alpha=0.5, hatch='xx', edgecolor=OBSTACLE_COLOR,
+                                lw=1.0, zorder=2))
+        if coverage_disks and cov_r not in ('', None):
+            for x, y in positions:
+                ax.add_patch(Circle((x, y), float(cov_r), facecolor='#2ca02c',
+                                    alpha=0.08, edgecolor='none', zorder=2))
+        ax.scatter(positions[:, 0], positions[:, 1], s=10, c=NODE_COLOR,
+                   edgecolors='white', linewidths=0.2, zorder=4)
+        ax.scatter([bs_pos[0]], [bs_pos[1]], marker='*', s=160, c='red',
+                   edgecolors='black', linewidths=0.4, zorder=5)
+        ax.set_xlim(-area, area)
+        ax.set_ylim(-area, area)
+        ax.set_aspect('equal')
+        title = titles[i] if titles is not None else f'{tag} (N={len(positions)})'
+        ax.set_title(title, fontsize=9)
+        ax.tick_params(labelsize=7)
+
+    for ax in axes[n:]:           # hide any spare cells
+        ax.axis('off')
+
+    handles = [
+        plt.Line2D([], [], marker='o', color='w', markerfacecolor=NODE_COLOR,
+                   markersize=6, label='Sensor node'),
+        plt.Line2D([], [], marker='*', color='w', markerfacecolor='red',
+                   markersize=12, label='Base station'),
+    ]
+    fig.legend(handles=handles, loc='lower center', ncol=2, fontsize=10,
+               frameon=False)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+
+    if out is None:
+        os.makedirs(FIG_DIR, exist_ok=True)
+        out = os.path.join(FIG_DIR, 'scenarios_grid.png')
+    else:
+        os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+    print(f'wrote {out}')
+    return out
 
 
 def _finish(ax, positions, bs_pos, area, title):
@@ -249,6 +337,12 @@ def main():
     group.add_argument('--def', dest='defn', help='region-definition YAML '
                        '(single-scenario mode)')
     group.add_argument('--scenario', help='frozen scenario CSV (single-scenario mode)')
+    group.add_argument('--grid', nargs='+', metavar='CSV',
+                       help='tile several frozen scenario CSVs into one figure')
+    ap.add_argument('--rows', type=int, default=2, help='grid rows (default 2)')
+    ap.add_argument('--cols', type=int, default=3, help='grid cols (default 3)')
+    ap.add_argument('--titles', nargs='+', metavar='TITLE',
+                    help='custom panel titles for --grid (one per CSV, in order)')
     ap.add_argument('--coverage-disks', dest='disks', action='store_true',
                     default=None, help='shade coverage_radius disks')
     ap.add_argument('--no-coverage-disks', dest='disks', action='store_false',
@@ -264,6 +358,9 @@ def main():
     elif args.scenario:
         disks = False if args.disks is None else args.disks
         plot_from_scenario(args.scenario, disks, args.show_links, args.out)
+    elif args.grid:
+        disks = False if args.disks is None else args.disks
+        plot_grid(args.grid, disks, args.rows, args.cols, args.out, args.titles)
     else:
         generate()
 

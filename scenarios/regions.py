@@ -25,7 +25,7 @@ class Region:
         bounds = box(-area, -area, area, area)
 
         obstacles = [Polygon(ring) for ring in d.get('obstacles', [])]
-        obstacles += [Point(float(cx), float(cy)).buffer(float(rad))
+        obstacles += [Point(float(cx), float(cy)).buffer(float(rad), quad_segs=64)
                       for cx, cy, rad in d.get('circles', [])]
         obstacle_union = unary_union(obstacles) if obstacles else None
 

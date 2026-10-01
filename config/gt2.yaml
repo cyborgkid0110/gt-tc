@@ -9,15 +9,18 @@
 # gt2.py guards this so it stays real-valued in [0,1] for any rho.
 # Calibrated against the running simulation so the steady-state number of
 # elected CHs averages ~20 (10% of 200 nodes).
-payoff: 3.4e-5
-# payoff: 6e-5
+# payoff: 2e-5
+payoff: 6e-5
 
 # ── Power-Control Game (Game 2) ──────────────────────────────────────
-alpha: 1.5                # weight for energy-balance benefit f_e
-beta: 0.1                 # weight for connectivity benefit f_pr
-mu: 0.01                  # scaling factor for integral energy-cost c_i
+# alpha: 1.5                # weight for energy-balance benefit f_e
+# beta: 0.1                 # weight for connectivity benefit f_pr
+# mu: 0.01                  # scaling factor for integral energy-cost c_i
+hop_max: 3                # k-hop neighbourhood radius for f_pr / local subgraph
+adapt_shuffle_seed: 0     # seeds the per-sweep CM shuffle within each layer
+                          # (dedicated RNG; does not touch the global stream)
 
 # tuned
-# alpha: 2.5                # weight for energy-balance benefit f_e
-# beta: 0.3                 # weight for connectivity benefit f_pr
-# mu: 0.05                  # scaling factor for integral energy-cost c_i
+alpha: 3                # weight for energy-balance benefit f_e
+beta: 0.9                 # weight for connectivity benefit f_pr
+mu: 0.09                  # scaling factor for integral energy-cost c_i

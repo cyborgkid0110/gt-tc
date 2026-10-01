@@ -27,15 +27,26 @@ class GT2(BaseAlgorithm):
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
 
-        self.payoff = cfg['payoff']
-        self.alpha = cfg['alpha']
-        self.beta = cfg['beta']
-        self.mu = cfg['mu']
+        # Coerce explicitly: PyYAML parses dot-less scientific notation
+        # (e.g. ``2e-5``) as a string, not a float, which would crash the
+        # games on ``payoff - c_cm``. float()/int() accept every valid spelling.
+        self.payoff = float(cfg['payoff'])
+        self.alpha = float(cfg['alpha'])
+        self.beta = float(cfg['beta'])
+        self.mu = float(cfg['mu'])
+        self.hop_max = int(cfg['hop_max'])
+
+        # Dedicated RNG for the power-control game's per-sweep shuffle:
+        # must never advance the global `random` stream consumed by the
+        # clustering game, or CH elections would stop being comparable
+        # across configurations.
+        self._adapt_rng = random.Random(int(cfg.get('adapt_shuffle_seed', 0)))
 
         # push game-2 weights into the network model
         self.net.alpha = self.alpha
         self.net.beta = self.beta
         self.net.mu = self.mu
+        self.net.hop_max = self.hop_max
 
     # ------------------------------------------------------------------ #
     #  Single round                                                        #
@@ -74,9 +85,9 @@ class GT2(BaseAlgorithm):
         mod_net_dict = net.to_network_dict(edges=mod_edges)
         node_dict = net.to_node_dict()
 
-        if self.t % self.plot_period == 0:
-            cluster_head_probability_plot(mod_net_dict, node_dict)
-            directional_wsn_plot(net.to_network_dict(), node_dict)
+        # if self.t % self.plot_period == 0:
+        #     cluster_head_probability_plot(mod_net_dict, node_dict)
+        #     directional_wsn_plot(net.to_network_dict(), node_dict)
 
         G = graph.build_graph(mod_net_dict['vertices'], mod_net_dict['edges'])
         layered_batches = graph.divide_network_by_clusters(G, node_dict)
@@ -92,15 +103,12 @@ class GT2(BaseAlgorithm):
         mod_net_dict = net.to_network_dict(edges=mod_edges)
         node_dict = net.to_node_dict()
 
-        if self.t % self.plot_period == 0:
-            tx_power_plot(mod_net_dict, node_dict)
-            directional_wsn_plot(net.to_network_dict(), node_dict)
-
-        G = graph.build_graph(mod_net_dict['vertices'], mod_net_dict['edges'])
-        layered_batches = graph.divide_network_by_clusters(G, node_dict)
+        # if self.t % self.plot_period == 0:
+        #     tx_power_plot(mod_net_dict, node_dict)
+        #     directional_wsn_plot(net.to_network_dict(), node_dict)
 
         # ---- Phase 7: maintenance (energy deduction) -----------------
-        self._maintenance(layered_batches)
+        self._maintenance()
 
         if self.dead_nodes >= net.num_nodes:
             return False
@@ -151,7 +159,7 @@ class GT2(BaseAlgorithm):
 
             if random.random() < p0:
                 s.p_ch = p0
-                if random.uniform(0, 1) < p0:
+                if random.uniform(0, 1) < p0 * s.e_res / s.e0:
                     s.is_ch = True
                     ch_true += 1
                 ch_can += 1
@@ -295,95 +303,81 @@ class GT2(BaseAlgorithm):
     # ------------------------------------------------------------------ #
 
     def _power_control_game(self, layered_batches: dict):
-        """Iterative best-response power reduction toward Nash equilibrium."""
+        """Iterative best-response power reduction toward Nash equilibrium.
+
+        Sweeps run outside-in: the farthest layer adapts first, moving
+        inward toward the CH (layer 0, skipped). Within each layer the CM
+        visiting order is re-shuffled every sweep so no node systematically
+        moves first inside its layer.
+        """
         net = self.net
 
         for _ch_pos, layers in layered_batches.items():
+            # resolve each layer's members once; layer 0 is the CH itself
+            layer_nodes = []
+            for i, layer in enumerate(layers):
+                if i == 0:
+                    continue
+                members = [net.sensor_by_pos(tuple(float(x) for x in pos))
+                           for batch in layer for pos in batch]
+                layer_nodes.append([s for s in members if not s.is_ch])
+
             nash_eq = False
             while not nash_eq:
                 nash_eq = True
-                for i, layer in reversed(list(enumerate(layers))):
-                    if i == 0:
-                        continue
-                    for batch in layer:
-                        for node_pos in batch:
-                            s = net.sensor_by_pos(
-                                tuple(float(x) for x in node_pos))
-                            if s.is_ch:
-                                continue
+                for members in reversed(layer_nodes):
+                    self._adapt_rng.shuffle(members)
+                    for s in members:
+                        if s.local_net is None:
+                            s.local_net = net.get_local_graph(s, net.hop_max)
+                        if s.util is None:
+                            s.util = net.calc_utility(s, s.power)
 
-                            if s.local_net is None:
-                                s.local_net = net.get_local_graph(
-                                    s, net.hop_max)
-                            if s.util is None:
-                                s.util = net.calc_utility(s, s.power)
+                        new_power = max(s.power - net.p_step, net.p_min)
+                        new_rc = net.calc_comm_range(new_power)
 
-                            new_power = max(s.power - net.p_step, net.p_min)
-                            new_rc = net.calc_comm_range(new_power)
+                        old_neighbors = s.neighbors[:]
+                        topology_changed = False
 
-                            old_neighbors = s.neighbors[:]
-                            topology_changed = False
+                        for nb in s.neighbors[:]:
+                            if s.distance_to(nb) > new_rc:
+                                topology_changed = True
+                                s.remove_neighbor(nb)
 
-                            for nb in s.neighbors[:]:
-                                if s.distance_to(nb) > new_rc:
-                                    topology_changed = True
-                                    s.remove_neighbor(nb)
+                        new_local = net.get_local_graph(s, net.hop_max)
 
-                            new_local = net.get_local_graph(s, net.hop_max)
+                        if not net.check_local_connectivity(new_local, s):
+                            new_util = (-1e6 * net.calc_energy_cost(s, new_power))
+                        else:
+                            new_util = net.calc_utility(s, new_power)
 
-                            if not net.check_local_connectivity(new_local, s):
-                                new_util = (-1e6
-                                            * net.calc_energy_cost(s,
-                                                                   new_power))
-                            else:
-                                new_util = net.calc_utility(s, new_power)
-
-                            if new_util > s.util:
-                                s.util = new_util
-                                s.power = new_power
-                                s.rc = new_rc
-                                if topology_changed:
-                                    s.local_net = {
-                                        'vertices': new_local['vertices'],
-                                        'edges': new_local['edges'].copy(),
-                                    }
-                                    net.update_edges_from_local(new_local)
-                                nash_eq = False
-                            else:
-                                s.neighbors = old_neighbors
+                        if new_util > s.util:
+                            s.util = new_util
+                            s.power = new_power
+                            s.rc = new_rc
+                            if topology_changed:
+                                s.local_net = {
+                                    'vertices': new_local['vertices'],
+                                    'edges': new_local['edges'].copy(),
+                                }
+                                net.update_edges_from_local(new_local)
+                            nash_eq = False
+                        else:
+                            s.neighbors = old_neighbors
 
     # ------------------------------------------------------------------ #
     #  Phase 7: Maintenance                                                #
     # ------------------------------------------------------------------ #
 
-    def _maintenance(self, layered_batches: dict):
-        """Deduct energy using routing-based per-hop TX cost."""
-        net = self.net
-
-        routing_tree = net.build_routing_tree()
-        costs = net.compute_maintenance_costs(routing_tree)
-
-        for s in net.sensors:
-            if not s.is_alive:
-                continue
-            if s.is_ch:
-                info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
-                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
-                          + net.calc_tx_cost(tx_dist, 'CH'))
-                s.e_res -= s.c_ch
-                if s.e_res <= 0:
-                    self._track_death(s)
-            elif s.id in costs:
-                s.c_cm = costs[s.id]
-                s.e_res -= s.c_cm
-                if s.e_res <= 0:
-                    self._track_death(s)
+    def _maintenance(self):
+        """Charge per-round maintenance energy along the cluster routing tree."""
+        self._charge_cluster_maintenance()
 
     def _maintenance_no_cluster(self):
         """Deduct energy using routing-based per-hop TX cost (no CHs)."""
         net = self.net
         routing_tree = net.build_routing_tree()
+        self._routing_tree = routing_tree
         costs = net.compute_maintenance_costs(routing_tree)
         for s in net.sensors:
             if not s.is_alive:

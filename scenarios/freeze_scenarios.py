@@ -11,11 +11,11 @@ import os
 
 import numpy as np
 
+from benchmark import SEEDS
 from main import build_network
 from .store import save_scenario
 
 DEPLOYMENTS = ['poisson', 'uniform', 'grid', 'gaussian', 'edge']
-SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 42]
 NUM_NODES = 200
 DEPLOYMENT_NODES = {'gaussian': 100}   # match benchmark.py overrides
 SCENARIO_DIR = os.path.join('scenarios', 'gen')

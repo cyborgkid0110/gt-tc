@@ -32,7 +32,6 @@ import numpy as np
 from algos import BaseAlgorithm
 from model import NetworkModel, Sensor
 from plot import directional_wsn_plot
-import graph
 
 
 class SCALEVY(BaseAlgorithm):
@@ -111,17 +110,8 @@ class SCALEVY(BaseAlgorithm):
         if self.t % self.plot_period == 0:
             directional_wsn_plot(net.to_network_dict(), net.to_node_dict())
 
-        # ---- Phase 3: build layered batches + CH→BS routes ----------
-        mod_edges = net.create_cluster_subgraph()
-        mod_net_dict = net.to_network_dict(edges=mod_edges)
-        node_dict = net.to_node_dict()
-        G = graph.build_graph(mod_net_dict['vertices'], mod_net_dict['edges'])
-        layered_batches = graph.divide_network_by_clusters(G, node_dict)
-
-        ch_routes = self._build_ch_to_bs_routes(best_grouping)
-
-        # ---- Phase 4: maintenance (energy deduction) ----------------
-        self._maintenance(layered_batches, ch_routes)
+        # ---- Phase 3: maintenance (energy deduction) ----------------
+        self._maintenance()
 
         if self.dead_nodes >= net.num_nodes:
             return False
@@ -429,83 +419,12 @@ class SCALEVY(BaseAlgorithm):
                     net.disconnect(s, nb)
 
     # ------------------------------------------------------------------ #
-    #  Phase 3: multi-hop CH→BS routing (directed-graph BFS)               #
+    #  Phase 3: maintenance                                                #
     # ------------------------------------------------------------------ #
 
-    def _build_ch_to_bs_routes(self,
-                               chs: list[Sensor]) -> dict[int, list[Sensor]]:
-        """Return {ch_id: [hop1, hop2, ..., sink_ch]} — the CH chain each CH uses
-        to reach the BS. The final hop transmits to the BS at the origin.
-
-        Edges in the CH-CH graph: A→B if B ∈ A.ch_neighbors AND B is closer to
-        the BS than A (monotone progress toward the sink). This avoids cycles and
-        matches the paper's intent of forwarding toward the BS.
-        """
-        routes: dict[int, list[Sensor]] = {}
-        alive_chs = [c for c in chs if c.is_alive]
-        if not alive_chs:
-            return routes
-
-        def d_bs(s: Sensor) -> float:
-            return self.net.dist_to_bs(s)
-
-        # Adjacency: monotone progress toward BS via existing ch_neighbors
-        adj: dict[int, list[Sensor]] = {c.id: [] for c in alive_chs}
-        for c in alive_chs:
-            d_c = d_bs(c)
-            for nb in c.ch_neighbors:
-                if nb.is_alive and nb.is_ch and d_bs(nb) < d_c:
-                    adj[c.id].append(nb)
-
-        # For each CH, pick the next hop that minimises remaining distance to BS.
-        # Build the chain greedily; fall back to direct CH→BS if no CH hop exists.
-        for c in alive_chs:
-            chain: list[Sensor] = []
-            cur = c
-            visited = {cur.id}
-            while True:
-                hops = adj[cur.id]
-                if not hops:
-                    break
-                # pick the CH hop closest to BS
-                nxt = min(hops, key=d_bs)
-                if nxt.id in visited:
-                    break
-                chain.append(nxt)
-                visited.add(nxt.id)
-                cur = nxt
-            routes[c.id] = chain  # may be empty → direct CH→BS
-        return routes
-
-    # ------------------------------------------------------------------ #
-    #  Phase 4: maintenance                                                #
-    # ------------------------------------------------------------------ #
-
-    def _maintenance(self,
-                     layered_batches: dict,
-                     ch_routes: dict[int, list[Sensor]]):
-        """Deduct energy using routing-based per-hop TX cost."""
-        net = self.net
-
-        routing_tree = net.build_routing_tree()
-        costs = net.compute_maintenance_costs(routing_tree)
-
-        for s in net.sensors:
-            if not s.is_alive:
-                continue
-            if s.is_ch:
-                info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
-                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
-                          + net.calc_tx_cost(tx_dist, 'CH'))
-                s.e_res -= s.c_ch
-                if s.e_res <= 0:
-                    self._track_death(s)
-            elif s.id in costs:
-                s.c_cm = costs[s.id]
-                s.e_res -= s.c_cm
-                if s.e_res <= 0:
-                    self._track_death(s)
+    def _maintenance(self):
+        """Charge per-round maintenance energy along the cluster routing tree."""
+        self._charge_cluster_maintenance()
 
     # ------------------------------------------------------------------ #
     #  Reference: Eq. (16) relay-node selection (not in main flow)         #

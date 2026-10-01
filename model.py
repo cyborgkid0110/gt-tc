@@ -83,18 +83,18 @@ class NetworkModel:
         self.bw = params.get('bw', 3e6)
         self.wave = params.get('wave', 0.125)
         self.gamma = params.get('gamma', 2.0)
-        self.g_ant = params.get('g_ant', 1.0)
+        self.g_tx = params.get('g_tx', 1.0)
+        self.g_rx = params.get('g_rx', 1.0)
         self.eta = params.get('eta', 0.30)
         self.r_bit = params.get('r_bit', 250e3)
 
         self.p_th = self.snr * self.nf_rx * self.n0 * self.bw
         self.eps_amp = (self.p_th * (4 * math.pi / self.wave) ** self.gamma
-                        / (self.g_ant * self.eta * self.r_bit))
+                        / (self.g_tx * self.g_rx * self.eta * self.r_bit))
 
         self.p_min = params.get('p_min', 0.01)
         self.p_max = params.get('p_max', 0.08)
         self.p_step = params.get('p_step', 0.0001)
-        self.hop_max = params.get('hop_max', 3)
 
         # Energy parameters
         self.e_elec = params.get('e_elec', 50e-9)
@@ -127,9 +127,15 @@ class NetworkModel:
 
     def calc_comm_range(self, power):
         """Maximum single-hop range at given transmit power (d_max formula)."""
-        return (power * self.g_ant * self.eta
+        return (power * self.g_tx * self.g_rx * self.eta
                 / (self.p_th * (4 * math.pi / self.wave) ** self.gamma)
                 ) ** (1 / self.gamma)
+
+    def calc_power_for_range(self, rc):
+        """Inverse of ``calc_comm_range``: transmit power for single-hop range rc."""
+        return (rc ** self.gamma) * self.p_th \
+            * (4 * math.pi / self.wave) ** self.gamma \
+            / (self.g_tx * self.g_rx * self.eta)
 
     def update_comm_range(self, sensor):
         sensor.rc = self.calc_comm_range(sensor.power)
@@ -251,8 +257,158 @@ class NetworkModel:
                 'tx_dist': tx_d,
                 'depth': depth[nid],
                 'num_descendants': descendants[nid],
+                'delivers': True,
             }
         return tree
+
+    def build_cluster_routing_tree(self):
+        """Cluster routing tree: CM -> multi-hop intra-cluster relay -> CH ->
+        multi-hop CH backbone -> BS.
+
+        Same schema as build_routing_tree plus 'delivers' (bool): True iff the
+        node's path actually reaches the BS. Members reach their CH over a
+        per-cluster reverse-BFS of same-cluster member links; a member with no
+        path to its CH gets parent_id=None, tx_dist=rc, delivers=False (it still
+        pays a failed TX at its own power). Stranded clusters (no gateway CH)
+        still get parents/tx_dist but delivers=False; the component's
+        closest-to-BS CH makes a capped best-effort BS attempt.
+        """
+        from collections import deque
+
+        chs = [s for s in self.sensors if s.is_alive and s.is_ch]
+        ch_ids = {ch.id for ch in chs}
+
+        # CH-only adjacency from ch_neighbors (alive CHs only), symmetrised.
+        ch_adj = {cid: set() for cid in ch_ids}
+        for ch in chs:
+            for nb in ch.ch_neighbors:
+                if nb.is_alive and nb.is_ch and nb.id in ch_ids:
+                    ch_adj[ch.id].add(nb.id)
+                    ch_adj[nb.id].add(ch.id)
+
+        parent, depth, tx_dist, delivers = {}, {}, {}, {}
+        cap = self.calc_comm_range(self.p_max)
+
+        # Gateway CHs + reachable backbone (reverse-BFS from gateways).
+        queue = deque()
+        for ch in chs:
+            if self.dist_to_bs(ch) <= ch.rc:
+                parent[ch.id] = None
+                depth[ch.id] = 0
+                tx_dist[ch.id] = self.dist_to_bs(ch)
+                delivers[ch.id] = True
+                queue.append(ch.id)
+        while queue:
+            cur = queue.popleft()
+            for nb in ch_adj[cur]:
+                if nb not in parent:
+                    parent[nb] = cur
+                    depth[nb] = depth[cur] + 1
+                    tx_dist[nb] = self.sensors[nb].distance_to(self.sensors[cur])
+                    delivers[nb] = True
+                    queue.append(nb)
+
+        # Stranded CH components (no gateway). Root at closest-to-BS terminal.
+        stranded = [cid for cid in ch_ids if cid not in parent]
+        stranded_set = set(stranded)
+        visited = set()
+        for start in stranded:
+            if start in visited:
+                continue
+            comp, q = [], deque([start])
+            visited.add(start)
+            while q:
+                c = q.popleft()
+                comp.append(c)
+                for nb in ch_adj[c]:
+                    if nb in stranded_set and nb not in visited:
+                        visited.add(nb)
+                        q.append(nb)
+            comp_set = set(comp)
+            terminal = min(comp, key=lambda i: self.dist_to_bs(self.sensors[i]))
+            parent[terminal] = None
+            depth[terminal] = 0
+            tx_dist[terminal] = min(self.dist_to_bs(self.sensors[terminal]), cap)
+            delivers[terminal] = False
+            seen, q = {terminal}, deque([terminal])
+            while q:
+                cur = q.popleft()
+                for nb in ch_adj[cur]:
+                    if nb in comp_set and nb not in seen:
+                        seen.add(nb)
+                        parent[nb] = cur
+                        depth[nb] = depth[cur] + 1
+                        tx_dist[nb] = self.sensors[nb].distance_to(self.sensors[cur])
+                        delivers[nb] = False
+                        q.append(nb)
+
+        # Member layer: multi-hop CM -> ... -> CH over same-cluster member edges
+        # (forward-only). Reverse-BFS rooted at each CH already in the tree.
+        members_by_ch = {}
+        for s in self.sensors:
+            if not s.is_alive or s.is_ch:
+                continue
+            ch = s.ch_belong
+            if ch is not None and ch.is_alive and ch.is_ch and ch.id in parent:
+                members_by_ch.setdefault(ch.id, []).append(s)
+
+        for ch_id, members in members_by_ch.items():
+            mids = {m.id for m in members}
+            # rev[t] = same-cluster members m with directed edge m -> t.
+            rev = {ch_id: []}
+            for m in members:
+                rev[m.id] = []
+            for m in members:
+                if self.edges[m.id, ch_id] == 1:
+                    rev[ch_id].append(m.id)
+                for t_id in mids:
+                    if t_id != m.id and self.edges[m.id, t_id] == 1:
+                        rev[t_id].append(m.id)
+            q = deque([ch_id])
+            seen = {ch_id}
+            while q:
+                cur = q.popleft()
+                for m_id in rev[cur]:
+                    if m_id not in seen:
+                        seen.add(m_id)
+                        parent[m_id] = cur
+                        depth[m_id] = depth[cur] + 1
+                        tx_dist[m_id] = self.sensors[m_id].distance_to(
+                            self.sensors[cur])
+                        delivers[m_id] = delivers[ch_id]
+                        q.append(m_id)
+
+        # Unreached members: no-path (live CH, no relay route) or orphan (no CH).
+        for s in self.sensors:
+            if not s.is_alive or s.is_ch or s.id in parent:
+                continue
+            ch = s.ch_belong
+            if ch is not None and ch.is_alive and ch.is_ch and ch.id in parent:
+                # Has a CH but no path to it -> failed TX at its own power.
+                parent[s.id] = None
+                depth[s.id] = 0
+                tx_dist[s.id] = s.rc
+                delivers[s.id] = False
+            else:
+                # Orphan: single-node CH for the round.
+                reach = self.dist_to_bs(s) <= s.rc
+                parent[s.id] = None
+                depth[s.id] = 0
+                tx_dist[s.id] = self.dist_to_bs(s) if reach \
+                    else min(self.dist_to_bs(s), cap)
+                delivers[s.id] = reach
+
+        # num_descendants (subtree sizes), deepest first.
+        descendants = {nid: 0 for nid in parent}
+        for nid in sorted(parent, key=lambda x: depth[x], reverse=True):
+            p = parent[nid]
+            if p is not None:
+                descendants[p] += 1 + descendants[nid]
+
+        return {nid: {'parent_id': parent[nid], 'tx_dist': tx_dist[nid],
+                      'depth': depth[nid], 'num_descendants': descendants[nid],
+                      'delivers': delivers[nid]}
+                for nid in parent}
 
     def compute_maintenance_costs(self, routing_tree):
         """Per-node energy cost based on routing tree (CM role only).
@@ -282,6 +438,68 @@ class NetworkModel:
 
             costs[s.id] = c_sense + c_process + (1 + nd) * tx + nd * rx
 
+        return costs
+
+    def compute_cluster_maintenance_costs(self, tree):
+        """Per-node energy along the cluster routing tree (forward-only members
+        and forward-only CH backbone; each CH aggregates only its own cluster).
+
+        Every node in the tree is charged regardless of 'delivers' (a stranded
+        cluster still pays its transmissions). A member forwards its own packet
+        plus every descendant's ((1+nd) CM TX + nd RX of m_pkt_s, no fusion); a
+        leaf or no-path member has nd=0 (the no-path member pays one CM TX at
+        tx_dist=rc). A CH receives every member raw packet of its cluster
+        (m_pkt_s each), fuses them to one aggregated packet (e_agg), and on the
+        backbone forwards that own packet plus every downstream CH's aggregated
+        packet without re-fusing ((1+nd_ch) CH TX + nd_ch RX of m_pkt_l), where
+        nd_ch = CH descendants below it. Nodes absent from the tree pay
+        sensing+processing.
+        """
+        from collections import Counter
+
+        m_ch = Counter()   # reached members per cluster CH (raw packets arriving)
+        for nid, info in tree.items():
+            s = self.sensors[nid]
+            if not s.is_ch and info['parent_id'] is not None:  # reached member
+                ch = s.ch_belong
+                if ch is not None:
+                    m_ch[ch.id] += 1
+
+        # CH-only subtree sizes (downstream CHs forwarded through each CH),
+        # deepest first over CH nodes; a CH's parent on the backbone is a CH.
+        ch_desc = Counter()
+        ch_nodes = [nid for nid in tree if self.sensors[nid].is_ch]
+        for nid in sorted(ch_nodes, key=lambda x: tree[x]['depth'], reverse=True):
+            p = tree[nid]['parent_id']
+            if p is not None and self.sensors[p].is_ch:
+                ch_desc[p] += 1 + ch_desc[nid]
+
+        costs = {}
+        for s in self.sensors:
+            if not s.is_alive:
+                continue
+            m_bit = self.sensor_sample_bits
+            i_sense = random.uniform(1e-8, 5e-7)
+            c_sense = s.Vpre * i_sense * m_bit
+            c_process = s.Vpre * m_bit * i_sense / 4
+
+            if s.id not in tree:
+                costs[s.id] = c_sense + c_process
+                continue
+
+            info = tree[s.id]
+            if s.is_ch:
+                nd_ch = ch_desc[s.id]
+                rx = (m_ch[s.id] * self.m_pkt_s * self.e_elec
+                      + nd_ch * self.m_pkt_l * self.e_elec)
+                agg = self.m_pkt_l * self.e_agg
+                tx = (1 + nd_ch) * self.calc_tx_cost(info['tx_dist'], 'CH')
+                costs[s.id] = c_sense + c_process + rx + agg + tx
+            else:
+                nd = info['num_descendants']
+                tx = (1 + nd) * self.calc_tx_cost(info['tx_dist'], 'CM')
+                rx = nd * self.m_pkt_s * self.e_elec
+                costs[s.id] = c_sense + c_process + tx + rx
         return costs
 
     # ------------------------------------------------------------------ #
@@ -383,35 +601,41 @@ class NetworkModel:
                 self.edges[si.id, sj.id] = local_net['edges'][i, j]
 
     def check_potential_connectivity(self):
-        """True iff the network is a single connected component at maximum power.
+        """True iff every node can reach the base station at maximum power.
 
         At ``p_max`` every node shares the same range ``calc_comm_range(p_max)``
-        and the adjacency is symmetric (distance is symmetric), so this is the
-        densest topology any algorithm could ever realise. If the network is not
-        connected here, no power-control or clustering scheme can connect it —
-        the deployment is infeasible. (This is stronger than merely checking for
-        isolated nodes: it rejects layouts that split into separate components.)
+        — the densest topology any algorithm could ever realise. Feasibility is
+        rooted at the **base station**: the layout is feasible when every node has
+        a (multi-hop) path to the BS, with the BS participating as a graph node
+        (the data sink). A node that cannot reach the BS even at max power is
+        infeasible — no routing/clustering scheme could deliver its data.
+
+        This is the **same connectivity definition** the coverage generator
+        guarantees (``scenarios.coverage_deploy.is_connected_to_bs``), so any
+        frozen scenario that passed generation also passes this gate. It is
+        deliberately *not* "all nodes form one component among themselves": two
+        clusters that each independently reach the BS are a valid data-collection
+        layout, not an infeasible one.
         """
         n = self.num_nodes
-        if n <= 1:
+        if n == 0:
             return True
         max_rc = self.calc_comm_range(self.p_max)
-        coords = np.array([[s.x, s.y] for s in self.sensors], dtype=float)
-        # BFS from node 0 over the max-power adjacency (each node expanded once).
-        seen = np.zeros(n, dtype=bool)
+        # BFS rooted at the BS (index 0); nodes are indices 1..n. The BS is a
+        # graph node, so it can relay between clusters that both reach it.
+        pts = np.empty((n + 1, 2), dtype=float)
+        pts[0] = (self.bs_x, self.bs_y)
+        pts[1:] = [[s.x, s.y] for s in self.sensors]
+        seen = np.zeros(n + 1, dtype=bool)
         seen[0] = True
         frontier = [0]
         while frontier:
             i = frontier.pop()
-            d = np.hypot(coords[:, 0] - coords[i, 0], coords[:, 1] - coords[i, 1])
+            d = np.hypot(pts[:, 0] - pts[i, 0], pts[:, 1] - pts[i, 1])
             nbrs = np.nonzero((d <= max_rc) & ~seen)[0]
             seen[nbrs] = True
             frontier.extend(nbrs.tolist())
-        if not seen.all():
-            return False
-        # At least one node must reach the BS at max power.
-        d_bs = np.hypot(coords[:, 0] - self.bs_x, coords[:, 1] - self.bs_y)
-        return bool(np.any(d_bs <= max_rc))
+        return bool(seen[1:].all())
 
     # ------------------------------------------------------------------ #
     #  Edge / neighbour management                                        #

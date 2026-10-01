@@ -44,7 +44,6 @@ import numpy as np
 from algos import BaseAlgorithm
 from model import NetworkModel, Sensor
 from plot import directional_wsn_plot
-import graph
 
 
 class FCCRA(BaseAlgorithm):
@@ -112,11 +111,8 @@ class FCCRA(BaseAlgorithm):
         if self.t % self.plot_period == 0:
             directional_wsn_plot(net.to_network_dict(), net.to_node_dict())
 
-        # ---- Phase 3: multi-hop CH→BS routes ------------------------
-        ch_routes = self._build_ch_to_bs_routes()
-
-        # ---- Phase 4: maintenance -----------------------------------
-        self._maintenance(ch_routes)
+        # ---- Phase 3: maintenance -----------------------------------
+        self._maintenance()
 
         if self.dead_nodes >= net.num_nodes:
             return False
@@ -325,9 +321,7 @@ class FCCRA(BaseAlgorithm):
         net = self.net
         if d <= 0:
             return net.p_min
-        return (d ** net.gamma * net.p_th
-                * (4 * math.pi / net.wave) ** net.gamma
-                / (net.g_ant * net.eta))
+        return net.calc_power_for_range(d)
 
     # ------------------------------------------------------------------ #
     #  Shared cluster-repair helpers (copy pattern from LEACH/SCA-Lévy)   #
@@ -415,73 +409,29 @@ class FCCRA(BaseAlgorithm):
                     net.disconnect(s, nb)
 
     # ------------------------------------------------------------------ #
-    #  Phase 3: multi-hop CH→BS backbone (monotone progress toward BS)    #
+    #  Phase 3: maintenance                                                #
     # ------------------------------------------------------------------ #
 
-    def _build_ch_to_bs_routes(self) -> dict[int, list[Sensor]]:
-        """For each alive CH, return the chain of CH hops used to reach the BS.
-        Greedy next-hop = the ch_neighbor strictly closer to the BS than self.
-        """
-        routes: dict[int, list[Sensor]] = {}
-        chs = [c for c in self._chs if c.is_alive]
-        if not chs:
-            return routes
-
-        def d_bs(s: Sensor) -> float:
-            return self.net.dist_to_bs(s)
-
-        adj: dict[int, list[Sensor]] = {c.id: [] for c in chs}
-        for c in chs:
-            dc = d_bs(c)
-            for nb in c.ch_neighbors:
-                if nb.is_alive and nb.is_ch and d_bs(nb) < dc:
-                    adj[c.id].append(nb)
-
-        for c in chs:
-            chain: list[Sensor] = []
-            cur = c
-            visited = {cur.id}
-            while True:
-                hops = adj[cur.id]
-                if not hops:
-                    break
-                nxt = min(hops, key=d_bs)
-                if nxt.id in visited:
-                    break
-                chain.append(nxt)
-                visited.add(nxt.id)
-                cur = nxt
-            routes[c.id] = chain
-        return routes
-
-    # ------------------------------------------------------------------ #
-    #  Phase 4: maintenance                                                #
-    # ------------------------------------------------------------------ #
-
-    def _maintenance(self, ch_routes: dict[int, list[Sensor]]) -> None:
-        """Deduct energy using routing-based per-hop TX cost."""
+    def _maintenance(self) -> None:
+        """Charge per-round maintenance energy along the cluster routing tree
+        (CM->relay->CH->backbone->BS) via the shared cluster-tree helpers."""
         net = self.net
-
-        routing_tree = net.build_routing_tree()
-        costs = net.compute_maintenance_costs(routing_tree)
-
+        tree = net.build_cluster_routing_tree()
+        self._routing_tree = tree
+        costs = net.compute_cluster_maintenance_costs(tree)
         for s in net.sensors:
-            if not s.is_alive:
+            if not s.is_alive or s.id not in costs:
                 continue
+            cost = costs[s.id]
             if s.is_ch:
-                info = routing_tree.get(s.id)
-                tx_dist = info['tx_dist'] if info else net.dist_to_bs(s)
-                s.c_ch = (net.m_pkt_l * (net.e_elec + net.e_agg)
-                          + net.calc_tx_cost(tx_dist, 'CH'))
-                s.e_res -= s.c_ch
-                if s.e_res <= 0:
-                    self._track_death(s)
+                s.c_ch = cost
+            else:
+                s.c_cm = cost
+            s.e_res -= cost
+            if s.e_res <= 0:
+                self._track_death(s)
+                if s.is_ch:
                     self._cluster_stable = False
-            elif s.id in costs:
-                s.c_cm = costs[s.id]
-                s.e_res -= s.c_cm
-                if s.e_res <= 0:
-                    self._track_death(s)
 
     # ------------------------------------------------------------------ #
     #  Reference helpers (NOT on the main flow — per PLAN.md)              #
