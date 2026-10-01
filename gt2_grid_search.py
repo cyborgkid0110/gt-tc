@@ -3,7 +3,7 @@
 Sweeps GT2's four free hyperparameters — ``payoff`` (ρ, clustering game) and
 ``alpha`` / ``beta`` / ``mu`` (power-control game) — over a configurable grid,
 for every deployment scenario, and reports the best combination per scenario
-against a chosen objective metric.
+against a weighted, per-scenario-normalised objective (OBJECTIVE_WEIGHTS).
 
 Design mirrors ``benchmark.py``:
   * Same scenarios as the benchmark: each is a frozen-CSV tag loaded from
@@ -88,10 +88,16 @@ MAX_ROUNDS = 50000            # match benchmark.py's round cap
 WORKERS = os.cpu_count()
 RESULTS_DIR = os.path.join('results', 'gridsearch')
 
-# Objective: which summary metric to optimise, and the direction.
-OBJECTIVE = 'fnd'             # 'fnd' | 'hnd' | 'lnd' | 'total_delivered' |
-                              # 'cumulative_pdr' | 'energy_per_packet' | ...
-_MINIMIZE = {'energy_per_packet', 'mean_energy_std', 'energy_drained'}
+# Objective (maximised): score = prod_m (metric_m / max(metric_m)) ** w_m, the
+# max taken over all combos of the same scenario, so each factor lies in [0, 1].
+# FND alone rewards GT2 for not communicating (min power, members cut off from
+# their CH -> low energy, low PDR). A weighted sum of PDR and FND still lands
+# on an extreme, because across combos FND ~ c / PDR; the product picks the
+# balanced middle of that trade-off. Computed in build_summaries from the
+# per-combo seed means already stored in each JSON, so changing the exponents
+# needs no re-simulation. Metrics must be "higher is better".
+OBJECTIVE_WEIGHTS = {'cumulative_pdr': 1.0, 'fnd': 1.0}
+OBJECTIVE = ' * '.join(f'({m}/max)^{w:g}' for m, w in OBJECTIVE_WEIGHTS.items())
 
 # Summary scalars carried into the CSVs (mean across seeds).
 _REPORT_METRICS = [
@@ -191,15 +197,12 @@ def run_combo(tag, params, results_dir=RESULTS_DIR):
         agg[m] = float(np.mean(vals)) if vals else None
         agg[f'{m}_std'] = float(np.std(vals)) if vals else None
 
-    obj_vals = [r[OBJECTIVE] for r in per_seed if r.get(OBJECTIVE) is not None]
-    objective = float(np.mean(obj_vals)) if obj_vals else None
-
+    # The objective is normalised per scenario across combos, so it is scored
+    # in build_summaries, not here.
     payload = {
         'deployment': tag,
         'params': params,
         'seeds': SEEDS,
-        'objective_metric': OBJECTIVE,
-        'objective': objective,
         'metrics': agg,
     }
     tmp = out + '.tmp'
@@ -219,20 +222,48 @@ def _load_records(results_dir):
     return recs
 
 
+def _score(recs):
+    """Set r['objective'] = prod_m (metric_m / max_scenario(metric_m)) ** w_m.
+
+    The max runs over every combo of the record's scenario. A combo missing
+    any weighted metric (e.g. no node died, FND None) gets objective None.
+    """
+    by_dep = {}
+    for r in recs:
+        by_dep.setdefault(r['deployment'], []).append(r)
+    for dep_recs in by_dep.values():
+        top = {}
+        for m in OBJECTIVE_WEIGHTS:
+            vals = [r['metrics'].get(m) for r in dep_recs]
+            top[m] = max((v for v in vals if v is not None), default=None)
+        for r in dep_recs:
+            vals = {m: r['metrics'].get(m) for m in OBJECTIVE_WEIGHTS}
+            if any(v is None or not top[m] for m, v in vals.items()):
+                r['objective'] = None
+                continue
+            r['norm'] = {m: v / top[m] for m, v in vals.items()}
+            r['objective'] = float(np.prod([r['norm'][m] ** w
+                                            for m, w in OBJECTIVE_WEIGHTS.items()]))
+
+
 def build_summaries(results_dir=RESULTS_DIR):
     """Rebuild summary.csv (all combos) and best_per_scenario.csv from JSON."""
     recs = _load_records(results_dir)
+    _score(recs)
 
     param_keys = sorted(GRID)
+    norm_cols = [f'{m}_norm' for m in OBJECTIVE_WEIGHTS]
     fields = (['deployment'] + param_keys
-              + ['objective_metric', 'objective']
+              + ['objective_metric', 'objective'] + norm_cols
               + _REPORT_METRICS)
 
     def _row(r):
         row = {'deployment': r['deployment']}
         row.update({k: r['params'][k] for k in param_keys})
-        row['objective_metric'] = r['objective_metric']
+        row['objective_metric'] = OBJECTIVE
         row['objective'] = r['objective']
+        row.update({f'{m}_norm': r.get('norm', {}).get(m)
+                    for m in OBJECTIVE_WEIGHTS})
         row.update({m: r['metrics'].get(m) for m in _REPORT_METRICS})
         return row
 
@@ -244,14 +275,13 @@ def build_summaries(results_dir=RESULTS_DIR):
                                              tuple(r['params'][k] for k in param_keys))):
             w.writerow(_row(r))
 
-    # Best combo per scenario.
-    minimize = OBJECTIVE in _MINIMIZE
+    # Best combo per scenario (highest objective).
     best = {}
     for r in recs:
         if r['objective'] is None:
             continue
         cur = best.get(r['deployment'])
-        if cur is None or (r['objective'] < cur['objective']) == minimize:
+        if cur is None or r['objective'] > cur['objective']:
             best[r['deployment']] = r
 
     best_path = os.path.join(results_dir, 'best_per_scenario.csv')
@@ -261,12 +291,12 @@ def build_summaries(results_dir=RESULTS_DIR):
         for dep in sorted(best):
             w.writerow(_row(best[dep]))
 
-    print(f'\nBest GT2 hyperparameters per scenario '
-          f'({"min" if minimize else "max"} {OBJECTIVE}):')
+    print(f'\nBest GT2 hyperparameters per scenario (max {OBJECTIVE}):')
     for dep in sorted(best):
         r = best[dep]
         ps = ', '.join(f'{k}={r["params"][k]:g}' for k in param_keys)
-        print(f'  {dep:18} {OBJECTIVE}={r["objective"]:.1f}  ({ps})')
+        terms = ' '.join(f'{m}={r["metrics"][m]:.3g}' for m in OBJECTIVE_WEIGHTS)
+        print(f'  {dep:18} objective={r["objective"]:.3f}  {terms}  ({ps})')
     return all_path, best_path
 
 

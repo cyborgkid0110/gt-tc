@@ -563,7 +563,10 @@ class NetworkModel:
 
     def get_local_graph(self, sensor, hop):
         """Build local sub-graph (vertices + adjacency matrix) for k-hop neighbourhood."""
-        vertices = self.get_k_hop_vertices(sensor, hop)
+        return self.induced_graph(self.get_k_hop_vertices(sensor, hop))
+
+    def induced_graph(self, vertices):
+        """Sub-graph on a fixed vertex list, edges from the current neighbour lists."""
         n = len(vertices)
         edges = np.zeros((n, n), dtype=int)
         for s1 in vertices:

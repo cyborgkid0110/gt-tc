@@ -344,7 +344,11 @@ class GT2(BaseAlgorithm):
                                 topology_changed = True
                                 s.remove_neighbor(nb)
 
-                        new_local = net.get_local_graph(s, net.hop_max)
+                        # Check the post-move links on the round-start vertex
+                        # list (s.local_net). Rebuilding the k-hop set from the
+                        # new neighbour list would drop any node that fell out
+                        # of reach, so the check could never fail.
+                        new_local = net.induced_graph(s.local_net['vertices'])
 
                         if not net.check_local_connectivity(new_local, s):
                             new_util = (-1e6 * net.calc_energy_cost(s, new_power))
